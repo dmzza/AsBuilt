@@ -18,6 +18,7 @@ const KIND_ORDER: Stmt["kind"][] = [
   "wall",
   "room",
   "rectilinear",
+  "axis",
   "length",
   "meas",
   "space",
@@ -74,6 +75,8 @@ export function printStmt(s: Stmt): string {
     }
     case "rectilinear":
       return `rectilinear ${s.ns}.*`;
+    case "axis":
+      return `axis ${s.wall} ${s.orient}`;
     case "length":
       return `length(${s.wall}) = ${printExpr(s.expr)}`;
     case "meas": {
@@ -112,6 +115,8 @@ export function printLayerFile(layer: ParsedLayer): string {
 function sortName(s: Stmt): string {
   switch (s.kind) {
     case "length":
+      return s.wall;
+    case "axis":
       return s.wall;
     case "delete":
       return s.target;

@@ -33,7 +33,7 @@ export interface Diagnostic {
 
 /** An effective statement after merge: where it came from and how. */
 export interface EffStmt {
-  stmt: Stmt | AxisStmt;
+  stmt: Stmt;
   /** Layer whose statement won the key. */
   layer: string;
   /** Name of the room/rectilinear statement this was expanded from, if any. */
@@ -131,9 +131,11 @@ function expandRoom(
     wall: `${r}.${suffix}`,
     orient,
     origin: r,
+    loc: room.loc,
+    leadingComments: [],
   });
 
-  const stmts: (Stmt | AxisStmt)[] = [
+  const stmts: Stmt[] = [
     j("sw", ox, oy),
     j("se", ox + w, oy),
     j("ne", ox + w, oy + d),
@@ -316,6 +318,8 @@ export function resolve(layers: Map<string, ParsedLayer>, branch: string): Resol
           wall: wallKey,
           orient: dx >= dy ? "h" : "v",
           origin: `${ns}.rectilinear`,
+          loc: eff.stmt.loc,
+          leadingComments: [],
         },
         layer: eff.layer,
         expandedFrom: `${ns}.rectilinear`,

@@ -122,6 +122,20 @@ export interface DeleteStmt extends StmtBase {
   target: string;
 }
 
+/**
+ * `axis <wall> h|v` — constrain a wall to an axis. Authored for drawn walls;
+ * also produced by rect/rectilinear expansion (with `origin` set).
+ */
+export interface AxisStmt extends StmtBase {
+  kind: "axis";
+  /** `<wall>.axis` */
+  name: string;
+  wall: string;
+  orient: "h" | "v";
+  /** Statement that produced this via expansion, for diagnostics. */
+  origin?: string;
+}
+
 export type Stmt =
   | LayerHeader
   | WallTypeStmt
@@ -131,21 +145,11 @@ export type Stmt =
   | WallStmt
   | RoomRectStmt
   | RectilinearStmt
+  | AxisStmt
   | LengthStmt
   | MeasStmt
   | SpaceStmt
   | DeleteStmt;
-
-/** Statements produced by template/blanket expansion (never parsed from files). */
-export interface AxisStmt {
-  kind: "axis";
-  /** `<wall>.axis` */
-  name: string;
-  wall: string;
-  orient: "h" | "v";
-  /** Statement that produced this (room or rectilinear), for diagnostics. */
-  origin: string;
-}
 
 /**
  * Shadowing key of a statement. Two statements with the same key across a
@@ -165,6 +169,8 @@ export function stmtKey(s: Stmt): string | null {
       return s.name;
     case "set":
       return s.name; // shadows the param of the same name
+    case "axis":
+      return s.name;
     case "rectilinear":
       return `${s.ns}.rectilinear`;
     case "length":

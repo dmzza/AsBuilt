@@ -176,3 +176,49 @@ export function wallLengthGrade(
     return Math.hypot(b.x - a.x, b.y - a.y);
   });
 }
+
+/**
+ * Grades for every wall at once: one perturbed solve per param, reused across
+ * all walls (the per-wall variant costs walls x params solves).
+ */
+export function allWallGrades(
+  pipeline: Pipeline,
+): Map<string, { grade: Grade; support: string[] }> {
+  const walls: { key: string; from: string; to: string }[] = [];
+  for (const [key, eff] of pipeline.resolved.effective) {
+    if (eff.stmt.kind === "wall") {
+      walls.push({ key, from: eff.stmt.from, to: eff.stmt.to });
+    }
+  }
+  const lengthIn = (sol: Solution, w: { from: string; to: string }): number => {
+    const a = junctionPos(sol, w.from);
+    const b = junctionPos(sol, w.to);
+    if (a === null || b === null) return NaN;
+    return Math.hypot(b.x - a.x, b.y - a.y);
+  };
+
+  const base = new Map(walls.map((w) => [w.key, lengthIn(pipeline.solution, w)]));
+  const support = new Map<string, string[]>(walls.map((w) => [w.key, []]));
+  const grades = new Map<string, Grade[]>(walls.map((w) => [w.key, []]));
+
+  for (const [pkey, eff] of pipeline.resolved.effective) {
+    if (eff.stmt.kind !== "param" && eff.stmt.kind !== "set") continue;
+    const perturbed = perturbParam(pipeline, pkey, 1);
+    for (const w of walls) {
+      const delta = Math.abs(lengthIn(perturbed, w) - base.get(w.key)!);
+      if (delta > SENSITIVITY_TOL) {
+        support.get(w.key)!.push(pkey);
+        grades.get(w.key)!.push(eff.stmt.prov);
+      }
+    }
+  }
+
+  const out = new Map<string, { grade: Grade; support: string[] }>();
+  for (const w of walls) {
+    out.set(w.key, {
+      grade: weakest(grades.get(w.key)!),
+      support: support.get(w.key)!.sort(),
+    });
+  }
+  return out;
+}
