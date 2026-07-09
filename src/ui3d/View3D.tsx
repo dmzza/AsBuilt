@@ -38,9 +38,9 @@ function wallHeight(pipeline: Pipeline, wallKey: string): number {
 }
 
 function buildScene(pipeline: Pipeline, group: THREE.Group, selection: string | null): void {
-  const wallMat = new THREE.MeshStandardMaterial({ color: 0xd6d3ce, roughness: 0.9 });
+  const wallMat = new THREE.MeshStandardMaterial({ color: 0xdfdbd0, roughness: 0.9 });
   const wallSelMat = new THREE.MeshStandardMaterial({ color: 0x93b4f8, roughness: 0.8 });
-  const fixtureMat = new THREE.MeshStandardMaterial({ color: 0xa8b0ba, roughness: 0.7 });
+  const fixtureMat = new THREE.MeshStandardMaterial({ color: 0xaba79b, roughness: 0.7 });
   const fixtureSelMat = new THREE.MeshStandardMaterial({ color: 0x7c9cf0, roughness: 0.7 });
 
   const thickness = new Map<string, number>();
@@ -155,17 +155,45 @@ export function View3D(): JSX.Element {
     wrap.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xf6f6f8);
-    scene.add(new THREE.AmbientLight(0xffffff, 0.65));
-    const sun = new THREE.DirectionalLight(0xffffff, 1.4);
+    scene.background = new THREE.Color(0xf5f3ec);
+    scene.add(new THREE.AmbientLight(0xfffdf7, 0.7));
+    const sun = new THREE.DirectionalLight(0xfff6e8, 1.3);
     sun.position.set(300, 500, 200);
     scene.add(sun);
-    scene.add(new THREE.GridHelper(1600, 100, 0xd4d4d8, 0xe8e8ec));
+    scene.add(new THREE.GridHelper(1600, 100, 0xd9d5c8, 0xe9e6dc));
 
     const camera = new THREE.PerspectiveCamera(45, 1, 1, 20000);
     camera.position.set(300, 260, 300);
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
+    // Wheel is ours: two-finger scroll pans (like the 2D sheet); pinch
+    // (ctrlKey wheel on macOS) or ⌘-scroll dollies.
+    controls.enableZoom = false;
+    const onWheel = (e: WheelEvent): void => {
+      e.preventDefault();
+      if (e.ctrlKey || e.metaKey) {
+        const offset = camera.position.clone().sub(controls.target);
+        const dist = THREE.MathUtils.clamp(
+          offset.length() * Math.exp(e.deltaY * 0.01),
+          20,
+          12000,
+        );
+        camera.position.copy(controls.target).add(offset.setLength(dist));
+      } else {
+        const dist = camera.position.distanceTo(controls.target);
+        const perPx =
+          (2 * dist * Math.tan((camera.fov * Math.PI) / 360)) /
+          Math.max(renderer.domElement.clientHeight, 1);
+        const right = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0);
+        const up = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 1);
+        const pan = right
+          .multiplyScalar(e.deltaX * perPx)
+          .add(up.multiplyScalar(-e.deltaY * perPx));
+        camera.position.add(pan);
+        controls.target.add(pan);
+      }
+    };
+    renderer.domElement.addEventListener("wheel", onWheel, { passive: false });
 
     const group = new THREE.Group();
     scene.add(group);
@@ -228,6 +256,7 @@ export function View3D(): JSX.Element {
     return () => {
       cancelAnimationFrame(state.raf);
       ro.disconnect();
+      renderer.domElement.removeEventListener("wheel", onWheel);
       renderer.domElement.removeEventListener("pointerdown", onDown);
       renderer.domElement.removeEventListener("pointerup", onUp);
       disposeGroup(group);
