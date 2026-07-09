@@ -1,16 +1,150 @@
-import { useEffect, useMemo, useRef, useState, type JSX } from "react";
+import { useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "react";
 import {
   allParams,
-  formatLength,
-  proposeDelete,
-  wallView,
   allWallGrades,
+  formatLength,
+  junctionPos,
+  openingViews,
+  parseLength,
+  proposeDelete,
+  proposeEditMeas,
+  proposeMove,
+  proposeSetFixture,
+  proposeSetOpening,
+  proposeSetOpeningOffset,
+  proposeSetParam,
+  proposeSetWallType,
+  wallView,
   type Grade,
+  type Provenance,
+  type S64,
+  type TextEdit,
 } from "./core";
 import { fsAccessSupported } from "./persist";
-import { useApp } from "./state/store";
+import { useApp, type Tool } from "./state/store";
 import { GRADE_COLORS, Plan2D } from "./ui2d/Plan2D";
 import { View3D } from "./ui3d/View3D";
+
+/** Provenance palette tuned for the dark chrome (sidebar, chips). */
+const GRADE_DARK: Record<Grade, string> = {
+  measured: "#82a8f8",
+  designed: "#bb95f6",
+  approximated: "#e2a350",
+  drawn: "#a6a396",
+};
+
+function today(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function fmt16(inches: number): string {
+  return formatLength(Math.round(inches * 16) * 4);
+}
+
+/** Wrap propose-then-run so proposer errors surface inline, not as toasts. */
+function commitEdits(fn: () => TextEdit[]): string | null {
+  try {
+    useApp.getState().runEdits(fn());
+    return null;
+  } catch (e) {
+    return (e as Error).message;
+  }
+}
+
+/* ---------------------------------------------------------------- fields */
+
+interface FieldProps {
+  value: string;
+  /** Parse + apply; return an error message to keep the field open. */
+  onCommit: (raw: string) => string | null;
+  placeholder?: string;
+  title?: string;
+}
+
+/** An inline editable value: click to edit, Enter applies, Esc cancels. */
+function Field({ value, onCommit, placeholder, title }: FieldProps): JSX.Element {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(value);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (editing) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [editing]);
+
+  if (!editing) {
+    return (
+      <button
+        className="field"
+        title={title ?? "Click to edit"}
+        onClick={() => {
+          setText(value);
+          setError(null);
+          setEditing(true);
+        }}
+      >
+        {value}
+      </button>
+    );
+  }
+  return (
+    <span className="field-edit">
+      <input
+        ref={inputRef}
+        value={text}
+        placeholder={placeholder ?? `e.g. 11'-8 1/2"`}
+        onChange={(e) => {
+          setText(e.target.value);
+          setError(null);
+        }}
+        onKeyDown={(e) => {
+          e.stopPropagation();
+          if (e.key === "Enter") {
+            const err = onCommit(text);
+            if (err !== null) setError(err);
+            else setEditing(false);
+          } else if (e.key === "Escape") {
+            setEditing(false);
+          }
+        }}
+        onBlur={() => setEditing(false)}
+      />
+      {error !== null && <span className="field-error">{error}</span>}
+    </span>
+  );
+}
+
+/** A length-valued Field: parses feet-inches, hands the S64 to `apply`. */
+function LengthField({
+  inches,
+  apply,
+  title,
+}: {
+  inches: number;
+  apply: (v: S64) => string | null;
+  title?: string;
+}): JSX.Element {
+  return (
+    <Field
+      value={fmt16(inches)}
+      title={title}
+      onCommit={(raw) => {
+        let v: S64;
+        try {
+          v = parseLength(raw);
+        } catch (e) {
+          return (e as Error).message;
+        }
+        return apply(v);
+      }}
+    />
+  );
+}
+
+/* ----------------------------------------------------------------- shell */
 
 function Toast(): JSX.Element | null {
   const toast = useApp((s) => s.toast);
@@ -25,9 +159,177 @@ function Toast(): JSX.Element | null {
   return <div className={`toast toast-${toast.kind}`}>{toast.message}</div>;
 }
 
-function Toolbar(): JSX.Element {
+const TOOL_DEFS: { id: Tool; label: string; keyHint: string; icon: JSX.Element }[] = [
+  {
+    id: "select",
+    label: "Select",
+    keyHint: "V",
+    icon: (
+      <path d="M5.5 2.5 L14.5 9.8 L10.2 10.6 L12.4 15 L10.3 16 L8.2 11.7 L5.5 14.2 Z" />
+    ),
+  },
+  {
+    id: "wall",
+    label: "Wall",
+    keyHint: "W",
+    icon: <path d="M2.5 7 H15.5 M2.5 11 H15.5 M6 7 L4.5 11 M10.5 7 L9 11 M15 7 L13.5 11" />,
+  },
+  {
+    id: "measure",
+    label: "Measure",
+    keyHint: "M",
+    icon: <path d="M3 9 H15 M3 5.5 V12.5 M15 5.5 V12.5 M6.5 7.5 V10.5 M9 7.5 V10.5 M11.5 7.5 V10.5" />,
+  },
+  {
+    id: "door",
+    label: "Door",
+    keyHint: "D",
+    icon: <path d="M4 15.5 V4 M4 4 A 11.5 11.5 0 0 1 15.5 15.5 M2 15.5 H16" />,
+  },
+  {
+    id: "window",
+    label: "Window",
+    keyHint: "N",
+    icon: <path d="M2.5 6.5 H15.5 V11.5 H2.5 Z M2.5 9 H15.5 M9 6.5 V11.5" />,
+  },
+  {
+    id: "fixture",
+    label: "Fixture",
+    keyHint: "F",
+    icon: <path d="M4 4.5 H14 V13.5 H4 Z M4 8 H14 M11 8 V13.5" />,
+  },
+];
+
+function ToolRail(): JSX.Element {
   const tool = useApp((s) => s.tool);
   const setTool = useApp((s) => s.setTool);
+  return (
+    <div className="rail">
+      {TOOL_DEFS.map((t) => (
+        <button
+          key={t.id}
+          className={`rail-tool ${tool === t.id ? "active" : ""}`}
+          title={`${t.label} (${t.keyHint})`}
+          onClick={() => setTool(t.id)}
+        >
+          <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+            <g
+              fill={t.id === "select" ? "currentColor" : "none"}
+              stroke="currentColor"
+              strokeWidth="1.3"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            >
+              {t.icon}
+            </g>
+          </svg>
+          <span>{t.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ViewToggle(): JSX.Element {
+  const viewMode = useApp((s) => s.viewMode);
+  const setViewMode = useApp((s) => s.setViewMode);
+  return (
+    <div className="seg">
+      {(["2d", "3d", "split"] as const).map((m) => (
+        <button
+          key={m}
+          className={viewMode === m ? "active" : ""}
+          onClick={() => setViewMode(m)}
+        >
+          {m === "split" ? "Split" : m.toUpperCase()}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function SheetPicker(): JSX.Element {
+  const project = useApp((s) => s.project);
+  const branch = useApp((s) => s.branch);
+  const setBranch = useApp((s) => s.setBranch);
+  const newConcept = useApp((s) => s.newConcept);
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (creating) inputRef.current?.focus();
+  }, [creating]);
+
+  const branches = useMemo(() => {
+    if (project === null) return [];
+    return [...project.layers.entries()].map(([n, l]) => ({
+      name: n,
+      parent: l.parsed.header.parent,
+    }));
+  }, [project]);
+
+  return (
+    <div className="sheet-picker">
+      <label className="bar-label">Sheet</label>
+      <select value={branch} onChange={(e) => setBranch(e.target.value)}>
+        {branches.map((b) => (
+          <option key={b.name} value={b.name}>
+            {b.name}
+            {b.parent !== null ? ` ← ${b.parent}` : ""}
+          </option>
+        ))}
+      </select>
+      <button title={`New concept branching from ${branch}`} onClick={() => setCreating(true)}>
+        + Concept
+      </button>
+      {creating && (
+        <div className="concept-form">
+          <div className="concept-form-label">New concept on “{branch}”</div>
+          <input
+            ref={inputRef}
+            value={name}
+            placeholder="galley_two"
+            onChange={(e) => {
+              setName(e.target.value);
+              setError(null);
+            }}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Escape") {
+                setCreating(false);
+                setName("");
+              } else if (e.key === "Enter") {
+                const n = name.trim();
+                if (!/^[a-z_][a-z0-9_]*$/.test(n)) {
+                  setError("lowercase identifier, e.g. galley_two");
+                  return;
+                }
+                if (project?.layers.has(n) === true) {
+                  setError(`"${n}" already exists`);
+                  return;
+                }
+                newConcept(n);
+                setCreating(false);
+                setName("");
+              }
+            }}
+            onBlur={() => setCreating(false)}
+          />
+          {error !== null ? (
+            <div className="field-error">{error}</div>
+          ) : (
+            <div className="concept-form-hint">Enter to create · Esc to cancel</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TopBar(): JSX.Element {
+  const tool = useApp((s) => s.tool);
   const wallType = useApp((s) => s.wallType);
   const setWallType = useApp((s) => s.setWallType);
   const pipeline = useApp((s) => s.pipeline);
@@ -36,6 +338,10 @@ function Toolbar(): JSX.Element {
   const loadDemo = useApp((s) => s.loadDemo);
   const dirty = useApp((s) => s.dirty);
   const dirHandle = useApp((s) => s.dirHandle);
+  const past = useApp((s) => s.past);
+  const future = useApp((s) => s.future);
+  const undo = useApp((s) => s.undo);
+  const redo = useApp((s) => s.redo);
 
   const wallTypes = useMemo(() => {
     const out: string[] = [];
@@ -50,45 +356,35 @@ function Toolbar(): JSX.Element {
   const dirtyCount = Object.keys(dirty).length;
 
   return (
-    <div className="toolbar">
-      <span className="logo">AsBuilt</span>
-      <div className="tool-group">
-        <button className={tool === "select" ? "active" : ""} onClick={() => setTool("select")}>
-          Select
-        </button>
-        <button className={tool === "wall" ? "active" : ""} onClick={() => setTool("wall")}>
-          Wall
-        </button>
-        <button
-          className={tool === "measure" ? "active" : ""}
-          onClick={() => setTool("measure")}
-          title="Record a tape measurement: click a wall, or two junctions (diagonals welcome)"
-        >
-          Measure
-        </button>
-        <button className={tool === "door" ? "active" : ""} onClick={() => setTool("door")}>
-          Door
-        </button>
-        <button className={tool === "window" ? "active" : ""} onClick={() => setTool("window")}>
-          Window
-        </button>
-        <button className={tool === "fixture" ? "active" : ""} onClick={() => setTool("fixture")}>
-          Fixture
-        </button>
-        <select value={wallType} onChange={(e) => setWallType(e.target.value)}>
-          {wallTypes.map((t) => (
-            <option key={t} value={t}>
-              {t}
-            </option>
-          ))}
-        </select>
-      </div>
+    <div className="topbar">
+      <span className="wordmark">
+        AS<em>BUILT</em>
+      </span>
+      <SheetPicker />
+      {tool === "wall" && (
+        <div className="bar-context">
+          <label className="bar-label">drawing with</label>
+          <select value={wallType} onChange={(e) => setWallType(e.target.value)}>
+            {wallTypes.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       <div className="spacer" />
       <ViewToggle />
       <div className="spacer" />
-      <BranchPicker />
-      <div className="spacer" />
-      <div className="tool-group">
+      <div className="bar-group">
+        <button title="Undo (⌘Z)" disabled={past.length === 0} onClick={undo}>
+          ↩
+        </button>
+        <button title="Redo (⇧⌘Z)" disabled={future.length === 0} onClick={redo}>
+          ↪
+        </button>
+      </div>
+      <div className="bar-group">
         {fsAccessSupported() && <button onClick={() => void openFolder()}>Open…</button>}
         <button onClick={() => void saveAll()} disabled={dirtyCount === 0 || dirHandle === null}>
           Save{dirtyCount > 0 ? ` (${dirtyCount})` : ""}
@@ -99,76 +395,431 @@ function Toolbar(): JSX.Element {
   );
 }
 
-function ViewToggle(): JSX.Element {
-  const viewMode = useApp((s) => s.viewMode);
-  const setViewMode = useApp((s) => s.setViewMode);
-  return (
-    <div className="tool-group">
-      <button className={viewMode === "2d" ? "active" : ""} onClick={() => setViewMode("2d")}>
-        2D
-      </button>
-      <button className={viewMode === "3d" ? "active" : ""} onClick={() => setViewMode("3d")}>
-        3D
-      </button>
-      <button
-        className={viewMode === "split" ? "active" : ""}
-        onClick={() => setViewMode("split")}
-      >
-        Split
-      </button>
-    </div>
-  );
-}
-
-function BranchPicker(): JSX.Element {
+/** The sheet's title block: live project/sheet/survey state, drafting-style. */
+function TitleBlock(): JSX.Element | null {
+  const pipeline = useApp((s) => s.pipeline);
   const project = useApp((s) => s.project);
   const branch = useApp((s) => s.branch);
-  const setBranch = useApp((s) => s.setBranch);
-  const newConcept = useApp((s) => s.newConcept);
+  const dirHandle = useApp((s) => s.dirHandle);
+  const viewMode = useApp((s) => s.viewMode);
+  if (pipeline === null || project === null || viewMode === "3d") return null;
 
-  const branches = useMemo(() => {
-    if (project === null) return [];
-    return [...project.layers.entries()].map(([name, l]) => ({
-      name,
-      parent: l.parsed.header.parent,
-    }));
-  }, [project]);
+  const params = allParams(pipeline);
+  const measured = params.filter((p) => p.prov === "measured").length;
+  const toMeasure = params.filter((p) => p.prov === "approximated").length;
+  const conflicts = pipeline.solution.contradictions.length;
+  const parent = project.layers.get(branch)?.parsed.header.parent ?? null;
 
   return (
-    <div className="tool-group">
-      <label className="branch-label">Branch</label>
-      <select value={branch} onChange={(e) => setBranch(e.target.value)}>
-        {branches.map((b) => (
-          <option key={b.name} value={b.name}>
-            {b.name}
-            {b.parent !== null ? ` (← ${b.parent})` : ""}
-          </option>
-        ))}
-      </select>
-      <button
-        onClick={() => {
-          const name = window.prompt("New concept name (branches from current):");
-          if (name !== null && name.trim() !== "") newConcept(name.trim());
-        }}
-      >
-        + Concept
-      </button>
+    <div className={`titleblock ${viewMode === "split" ? "titleblock-split" : ""}`}>
+      <div className="tb-row">
+        <span className="tb-label">Project</span>
+        <span className="tb-value">{dirHandle?.name ?? "demo (browser only)"}</span>
+      </div>
+      <div className="tb-row">
+        <span className="tb-label">Sheet</span>
+        <span className="tb-value">
+          {branch}
+          {parent !== null && <span className="tb-dim"> ← {parent}</span>}
+        </span>
+      </div>
+      <div className="tb-row">
+        <span className="tb-label">Date</span>
+        <span className="tb-value">{today()}</span>
+      </div>
+      <div className="tb-row">
+        <span className="tb-label">Survey</span>
+        <span className="tb-value">
+          {measured} measured · {toMeasure} to measure
+          {conflicts > 0 && <span className="tb-conflict"> · {conflicts} conflict{conflicts > 1 ? "s" : ""}</span>}
+        </span>
+      </div>
     </div>
   );
 }
+
+/* ------------------------------------------------------------- inspector */
+
+const GRADE_SHORT: Record<Grade, string> = {
+  measured: "meas",
+  designed: "design",
+  approximated: "approx",
+  drawn: "drawn",
+};
 
 function GradeChip({ grade }: { grade: Grade }): JSX.Element {
   return (
-    <span className="chip" style={{ color: GRADE_COLORS[grade], borderColor: GRADE_COLORS[grade] }}>
-      {grade}
+    <span
+      className="chip"
+      title={grade}
+      style={{ color: GRADE_DARK[grade], borderColor: GRADE_DARK[grade] }}
+    >
+      {GRADE_SHORT[grade]}
     </span>
   );
 }
 
+function Prop({ label, children }: { label: string; children: ReactNode }): JSX.Element {
+  return (
+    <div className="prop">
+      <span className="prop-label">{label}</span>
+      <span className="prop-value">{children}</span>
+    </div>
+  );
+}
+
+function WallPanel({ selection }: { selection: string }): JSX.Element | null {
+  const pipeline = useApp((s) => s.pipeline)!;
+  const project = useApp((s) => s.project)!;
+  const branch = useApp((s) => s.branch);
+  const deleteSelection = useApp((s) => s.deleteSelection);
+  const openEditor = useApp((s) => s.openEditor);
+  const grades = useMemo(() => allWallGrades(pipeline), [pipeline]);
+
+  const eff = pipeline.resolved.effective.get(selection);
+  if (eff?.stmt.kind !== "wall") return null;
+  const w = wallView(pipeline, selection);
+  if (w === null) return null;
+  const g = grades.get(selection);
+
+  // A wall length is directly editable when it's bound to a single param.
+  const binding = pipeline.resolved.effective.get(`${selection}.length`);
+  let boundParam: string | null = null;
+  if (binding?.stmt.kind === "length") {
+    const terms = binding.stmt.expr.terms;
+    const first = terms[0];
+    if (terms.length === 1 && first !== undefined && first.kind === "ref" && first.sign === 1) {
+      boundParam = first.name;
+    }
+  }
+  const paramEff = boundParam !== null ? pipeline.resolved.effective.get(boundParam) : undefined;
+  const paramProv: Provenance =
+    paramEff?.stmt.kind === "param" || paramEff?.stmt.kind === "set"
+      ? paramEff.stmt.prov
+      : "approximated";
+
+  const wallTypes: string[] = [];
+  for (const [key, e] of pipeline.resolved.effective) {
+    if (e.stmt.kind === "walltype") wallTypes.push(key);
+  }
+
+  return (
+    <div className="panel">
+      <h3>Wall {selection}</h3>
+      <Prop label="Length">
+        {boundParam !== null ? (
+          <LengthField
+            inches={w.lengthInches}
+            title={`Edits ${boundParam} (${paramProv})`}
+            apply={(v) =>
+              commitEdits(() =>
+                proposeSetParam(
+                  project,
+                  branch,
+                  boundParam!,
+                  v,
+                  paramProv,
+                  paramProv === "measured" ? today() : undefined,
+                ),
+              )
+            }
+          />
+        ) : (
+          <span className="ro">{fmt16(w.lengthInches)}</span>
+        )}
+        {g !== undefined && <GradeChip grade={g.grade} />}
+      </Prop>
+      <Prop label="Type">
+        <select
+          value={w.wallType}
+          onChange={(e) => {
+            const err = commitEdits(() =>
+              proposeSetWallType(project, branch, selection, e.target.value),
+            );
+            if (err !== null) useApp.getState().showToast(err, "error");
+          }}
+        >
+          {wallTypes.sort().map((t) => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+        </select>
+      </Prop>
+      <Prop label="Runs">
+        <span className="ro mono">
+          {w.from} → {w.to}
+        </span>
+      </Prop>
+      {g !== undefined && g.support.length > 0 && (
+        <Prop label="Driven by">
+          <span className="ro mono">{g.support.join(", ")}</span>
+        </Prop>
+      )}
+      <Prop label="Layer">
+        <span className="ro mono">
+          {eff.expandedFrom !== undefined ? `${eff.layer} (from ${eff.expandedFrom})` : eff.layer}
+        </span>
+      </Prop>
+      <div className="panel-actions">
+        <button
+          onClick={(e) =>
+            openEditor({
+              target: { kind: "measure-wall", wall: selection },
+              anchor: { x: e.clientX, y: e.clientY },
+              initial: "",
+              label: `Measured ${selection}`,
+            })
+          }
+        >
+          Record measurement
+        </button>
+        <button className="danger" onClick={deleteSelection}>
+          Delete
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function JunctionPanel({ selection }: { selection: string }): JSX.Element | null {
+  const pipeline = useApp((s) => s.pipeline)!;
+  const project = useApp((s) => s.project)!;
+  const branch = useApp((s) => s.branch);
+  const eff = pipeline.resolved.effective.get(selection);
+  if (eff?.stmt.kind !== "junction") return null;
+  const pos = junctionPos(pipeline.solution, selection);
+  if (pos === null) return null;
+
+  const move = (x: number, y: number): string | null => {
+    try {
+      const proposal = proposeMove(project, branch, selection, {
+        x: Math.round(x * 64),
+        y: Math.round(y * 64),
+      });
+      if (proposal.kind === "refusal") return proposal.message;
+      if (!proposal.verified) return "no clean edit reaches that position";
+      useApp.getState().runEdits(proposal.edits);
+      return null;
+    } catch (e) {
+      return (e as Error).message;
+    }
+  };
+
+  return (
+    <div className="panel">
+      <h3>Junction {selection}</h3>
+      <Prop label="X (east)">
+        <LengthField inches={pos.x} apply={(v) => move(v / 64, pos.y)} />
+      </Prop>
+      <Prop label="Y (north)">
+        <LengthField inches={pos.y} apply={(v) => move(pos.x, v / 64)} />
+      </Prop>
+      <Prop label="Layer">
+        <span className="ro mono">{eff.layer}</span>
+      </Prop>
+      <p className="hint">
+        Edits move through the solver: bound dimensions update; measured ones refuse.
+      </p>
+    </div>
+  );
+}
+
+function OpeningPanel({ selection }: { selection: string }): JSX.Element | null {
+  const pipeline = useApp((s) => s.pipeline)!;
+  const project = useApp((s) => s.project)!;
+  const branch = useApp((s) => s.branch);
+  const deleteSelection = useApp((s) => s.deleteSelection);
+  const eff = pipeline.resolved.effective.get(selection);
+  if (eff?.stmt.kind !== "opening") return null;
+  const s = eff.stmt;
+  const view = openingViews(pipeline).find((o) => o.key === selection);
+
+  return (
+    <div className="panel">
+      <h3>
+        {s.opKind === "door" ? "Door" : "Window"} {selection}
+        {view?.overflow === true && <span className="overflow-badge">doesn't fit</span>}
+      </h3>
+      <Prop label="In wall">
+        <span className="ro mono">{s.wall}</span>
+      </Prop>
+      <Prop label="Width">
+        <LengthField
+          inches={s.width / 64}
+          apply={(v) => commitEdits(() => proposeSetOpening(project, branch, selection, { width: v }))}
+        />
+      </Prop>
+      <Prop label="Height">
+        <LengthField
+          inches={s.height / 64}
+          apply={(v) => commitEdits(() => proposeSetOpening(project, branch, selection, { height: v }))}
+        />
+      </Prop>
+      {s.opKind === "window" && (
+        <Prop label="Sill">
+          <LengthField
+            inches={(s.sill ?? 0) / 64}
+            apply={(v) => commitEdits(() => proposeSetOpening(project, branch, selection, { sill: v }))}
+          />
+        </Prop>
+      )}
+      <Prop label={`From ${s.anchor}`}>
+        <LengthField
+          inches={view?.offsetInches ?? 0}
+          title="Offset along the wall to the near jamb"
+          apply={(v) => commitEdits(() => proposeSetOpeningOffset(project, branch, selection, v))}
+        />
+      </Prop>
+      <Prop label="Layer">
+        <span className="ro mono">{eff.layer}</span>
+      </Prop>
+      <div className="panel-actions">
+        <button className="danger" onClick={deleteSelection}>
+          Delete
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function FixturePanel({ selection }: { selection: string }): JSX.Element | null {
+  const pipeline = useApp((s) => s.pipeline)!;
+  const project = useApp((s) => s.project)!;
+  const branch = useApp((s) => s.branch);
+  const deleteSelection = useApp((s) => s.deleteSelection);
+  const rotateFixture = useApp((s) => s.rotateFixture);
+  const eff = pipeline.resolved.effective.get(selection);
+  if (eff?.stmt.kind !== "fixture") return null;
+  const s = eff.stmt;
+
+  return (
+    <div className="panel">
+      <h3>Fixture {selection}</h3>
+      <Prop label="Kind">
+        <Field
+          value={s.fixKind}
+          placeholder="fridge"
+          onCommit={(raw) => {
+            const n = raw.trim();
+            if (!/^[a-z_][a-z0-9_]*$/.test(n)) return "lowercase identifier, e.g. fridge";
+            return commitEdits(() => proposeSetFixture(project, branch, selection, { fixKind: n }));
+          }}
+        />
+      </Prop>
+      <Prop label="Width">
+        <LengthField
+          inches={s.w / 64}
+          apply={(v) => commitEdits(() => proposeSetFixture(project, branch, selection, { w: v }))}
+        />
+      </Prop>
+      <Prop label="Depth">
+        <LengthField
+          inches={s.d / 64}
+          apply={(v) => commitEdits(() => proposeSetFixture(project, branch, selection, { d: v }))}
+        />
+      </Prop>
+      <Prop label="Center X">
+        <LengthField
+          inches={s.at.x / 64}
+          apply={(v) =>
+            commitEdits(() =>
+              proposeSetFixture(project, branch, selection, { at: { x: v, y: s.at.y } }),
+            )
+          }
+        />
+      </Prop>
+      <Prop label="Center Y">
+        <LengthField
+          inches={s.at.y / 64}
+          apply={(v) =>
+            commitEdits(() =>
+              proposeSetFixture(project, branch, selection, { at: { x: s.at.x, y: v } }),
+            )
+          }
+        />
+      </Prop>
+      <Prop label="Rotation">
+        <span className="ro mono">{s.rot}°</span>
+        <button onClick={() => rotateFixture(selection)}>Rotate 90°</button>
+      </Prop>
+      <div className="panel-actions">
+        <button className="danger" onClick={deleteSelection}>
+          Delete
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MeasPanel({ selection }: { selection: string }): JSX.Element | null {
+  const pipeline = useApp((s) => s.pipeline)!;
+  const project = useApp((s) => s.project)!;
+  const branch = useApp((s) => s.branch);
+  const deleteSelection = useApp((s) => s.deleteSelection);
+  const eff = pipeline.resolved.effective.get(selection);
+  if (eff?.stmt.kind !== "meas") return null;
+  const s = eff.stmt;
+
+  return (
+    <div className="panel">
+      <h3>Measurement {selection}</h3>
+      <Prop label="Span">
+        <span className="ro mono">
+          {s.a} → {s.b}
+        </span>
+      </Prop>
+      <Prop label="Tape read">
+        <LengthField
+          inches={s.value / 64}
+          title="Correcting a reading re-dates it to today"
+          apply={(v) => commitEdits(() => proposeEditMeas(project, branch, selection, v, today()))}
+        />
+      </Prop>
+      {s.date !== undefined && (
+        <Prop label="Taped">
+          <span className="ro mono">{s.date}</span>
+        </Prop>
+      )}
+      <div className="panel-actions">
+        <button className="danger" onClick={deleteSelection}>
+          Delete
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SelectionPanel(): JSX.Element | null {
+  const pipeline = useApp((s) => s.pipeline);
+  const selection = useApp((s) => s.selection);
+  if (pipeline === null || selection === null) return null;
+  const eff = pipeline.resolved.effective.get(selection);
+  if (eff === undefined) return null;
+  switch (eff.stmt.kind) {
+    case "wall":
+      return <WallPanel selection={selection} />;
+    case "junction":
+      return <JunctionPanel selection={selection} />;
+    case "opening":
+      return <OpeningPanel selection={selection} />;
+    case "fixture":
+      return <FixturePanel selection={selection} />;
+    case "meas":
+      return <MeasPanel selection={selection} />;
+    default:
+      return null;
+  }
+}
+
+/* -------------------------------------------------- dimensions & problems */
+
 function ParamsPanel(): JSX.Element | null {
   const pipeline = useApp((s) => s.pipeline);
+  const project = useApp((s) => s.project);
+  const branch = useApp((s) => s.branch);
   const openEditor = useApp((s) => s.openEditor);
-  if (pipeline === null) return null;
+  if (pipeline === null || project === null) return null;
   const params = allParams(pipeline);
   const audit = params.filter((p) => p.prov === "approximated");
 
@@ -184,9 +835,27 @@ function ParamsPanel(): JSX.Element | null {
             <tr key={p.name} className={p.prov === "approximated" ? "row-audit" : ""}>
               <td className="param-name">{p.name}</td>
               <td className="param-value">
-                {formatLength(Math.round(p.solvedInches * 64))}
+                <LengthField
+                  inches={p.solvedInches}
+                  title={`Edit ${p.name} (stays ${p.prov})`}
+                  apply={(v) =>
+                    commitEdits(() =>
+                      proposeSetParam(
+                        project,
+                        branch,
+                        p.name,
+                        v,
+                        p.prov,
+                        p.prov === "measured" ? today() : undefined,
+                      ),
+                    )
+                  }
+                />
                 {Math.abs(p.solvedInches - p.authoredInches) > 1 / 32 && (
-                  <span className="drift" title={`authored ${formatLength(Math.round(p.authoredInches * 64))}`}>
+                  <span
+                    className="drift"
+                    title={`authored ${formatLength(Math.round(p.authoredInches * 64))}`}
+                  >
                     *
                   </span>
                 )}
@@ -195,22 +864,9 @@ function ParamsPanel(): JSX.Element | null {
                 <GradeChip grade={p.prov} />
               </td>
               <td className="param-actions">
-                <button
-                  title="Edit value"
-                  onClick={(e) =>
-                    openEditor({
-                      target: { kind: "param", name: p.name, prov: p.prov },
-                      anchor: { x: e.clientX, y: e.clientY },
-                      initial: formatLength(Math.round(p.authoredInches * 64)),
-                      label: `${p.name} (${p.prov})`,
-                    })
-                  }
-                >
-                  ✎
-                </button>
                 {p.prov !== "measured" && (
                   <button
-                    title="Record a measurement"
+                    title="Record a tape measurement"
                     onClick={(e) =>
                       openEditor({
                         target: { kind: "param-measure", name: p.name },
@@ -228,57 +884,6 @@ function ParamsPanel(): JSX.Element | null {
           ))}
         </tbody>
       </table>
-    </div>
-  );
-}
-
-function ValueEditor(): JSX.Element | null {
-  const editor = useApp((s) => s.editor);
-  const commitEditor = useApp((s) => s.commitEditor);
-  const closeEditor = useApp((s) => s.closeEditor);
-  const [text, setText] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
-
-  useEffect(() => {
-    if (editor !== null) {
-      setText(editor.initial);
-      setError(null);
-      // focus after mount
-      setTimeout(() => {
-        inputRef.current?.focus();
-        inputRef.current?.select();
-      }, 0);
-    }
-  }, [editor]);
-
-  if (editor === null) return null;
-  const left = Math.min(editor.anchor.x, window.innerWidth - 240);
-  const top = Math.min(editor.anchor.y + 8, window.innerHeight - 90);
-
-  return (
-    <div className="value-editor" style={{ left, top }}>
-      <div className="value-editor-label">{editor.label}</div>
-      <input
-        ref={inputRef}
-        value={text}
-        placeholder={`e.g. 11'-8 1/2"`}
-        onChange={(e) => {
-          setText(e.target.value);
-          setError(null);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            const err = commitEditor(text);
-            if (err !== null) setError(err);
-          } else if (e.key === "Escape") {
-            closeEditor();
-          }
-          e.stopPropagation();
-        }}
-      />
-      {error !== null && <div className="value-editor-error">{error}</div>}
-      <div className="value-editor-hint">Enter to apply · Esc to cancel</div>
     </div>
   );
 }
@@ -304,7 +909,8 @@ function SuspectRow({ suspect }: { suspect: string }): JSX.Element | null {
     return (
       <div className="suspect-row">
         <span className="suspect-name">
-          {suspect} = {formatLength(s.value)} <em>(measured{s.date !== undefined ? ` ${s.date}` : ""})</em>
+          {suspect} = {formatLength(s.value)}{" "}
+          <em>(measured{s.date !== undefined ? ` ${s.date}` : ""})</em>
         </span>
         <span className="suspect-actions">
           <button
@@ -317,7 +923,7 @@ function SuspectRow({ suspect }: { suspect: string }): JSX.Element | null {
               })
             }
           >
-            ✎
+            Correct
           </button>
           <button onClick={doDelete}>Remove</button>
         </span>
@@ -342,7 +948,7 @@ function SuspectRow({ suspect }: { suspect: string }): JSX.Element | null {
               })
             }
           >
-            ✎
+            Correct
           </button>
           <button
             title="Keep the value but stop treating it as gospel"
@@ -363,10 +969,7 @@ function SuspectRow({ suspect }: { suspect: string }): JSX.Element | null {
           {suspect} <em>({what})</em>
         </span>
         <span className="suspect-actions">
-          <button
-            title="Remove this default so the geometry can go out of square"
-            onClick={doDelete}
-          >
+          <button title="Remove this default so the geometry can go out of square" onClick={doDelete}>
             Relax
           </button>
         </span>
@@ -414,152 +1017,68 @@ function DiagnosticsPanel(): JSX.Element | null {
   );
 }
 
-function SelectionPanel(): JSX.Element | null {
-  const pipeline = useApp((s) => s.pipeline);
-  const selection = useApp((s) => s.selection);
-  const deleteSelection = useApp((s) => s.deleteSelection);
-  const grades = useMemo(
-    () => (pipeline === null ? null : allWallGrades(pipeline)),
-    [pipeline],
+/* ------------------------------------------------------------ value editor */
+
+function ValueEditor(): JSX.Element | null {
+  const editor = useApp((s) => s.editor);
+  const commitEditor = useApp((s) => s.commitEditor);
+  const closeEditor = useApp((s) => s.closeEditor);
+  const [text, setText] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (editor !== null) {
+      setText(editor.initial);
+      setError(null);
+      setTimeout(() => {
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      }, 0);
+    }
+  }, [editor]);
+
+  if (editor === null) return null;
+  const left = Math.min(editor.anchor.x, window.innerWidth - 240);
+  const top = Math.min(editor.anchor.y + 8, window.innerHeight - 90);
+
+  return (
+    <div className="value-editor" style={{ left, top }}>
+      <div className="value-editor-label">{editor.label}</div>
+      <input
+        ref={inputRef}
+        value={text}
+        placeholder={`e.g. 11'-8 1/2"`}
+        onChange={(e) => {
+          setText(e.target.value);
+          setError(null);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            const err = commitEditor(text);
+            if (err !== null) setError(err);
+          } else if (e.key === "Escape") {
+            closeEditor();
+          }
+          e.stopPropagation();
+        }}
+      />
+      {error !== null && <div className="value-editor-error">{error}</div>}
+      <div className="value-editor-hint">Enter to apply · Esc to cancel</div>
+    </div>
   );
-  if (pipeline === null || selection === null) return null;
-  const eff = pipeline.resolved.effective.get(selection);
-  if (eff === undefined) return null;
-
-  if (eff.stmt.kind === "wall") {
-    const w = wallView(pipeline, selection);
-    const g = grades?.get(selection);
-    if (w === null) return null;
-    return (
-      <div className="panel">
-        <h3>Wall {selection}</h3>
-        <dl>
-          <dt>Length</dt>
-          <dd>
-            {formatLength(Math.round(w.lengthInches * 16) * 4)}{" "}
-            {g !== undefined && <GradeChip grade={g.grade} />}
-          </dd>
-          <dt>Type</dt>
-          <dd>{w.wallType}</dd>
-          <dt>Runs</dt>
-          <dd>
-            {w.from} → {w.to}
-          </dd>
-          {g !== undefined && g.support.length > 0 && (
-            <>
-              <dt>Driven by</dt>
-              <dd>{g.support.join(", ")}</dd>
-            </>
-          )}
-          <dt>Layer</dt>
-          <dd>{eff.expandedFrom !== undefined ? `${eff.layer} (from ${eff.expandedFrom})` : eff.layer}</dd>
-        </dl>
-        <button className="danger" onClick={deleteSelection}>
-          Delete wall
-        </button>
-      </div>
-    );
-  }
-
-  if (eff.stmt.kind === "junction") {
-    return (
-      <div className="panel">
-        <h3>Junction {selection}</h3>
-        <dl>
-          <dt>Layer</dt>
-          <dd>{eff.layer}</dd>
-        </dl>
-        <p className="hint">Drag to move. Moves become dimension edits when geometry is bound.</p>
-      </div>
-    );
-  }
-
-  if (eff.stmt.kind === "opening") {
-    const s = eff.stmt;
-    return (
-      <div className="panel">
-        <h3>
-          {s.opKind === "door" ? "Door" : "Window"} {selection}
-        </h3>
-        <dl>
-          <dt>In</dt>
-          <dd>{s.wall}</dd>
-          <dt>Size</dt>
-          <dd>
-            {formatLength(s.width)} × {formatLength(s.height)}
-          </dd>
-          {s.opKind === "window" && s.sill !== undefined && (
-            <>
-              <dt>Sill</dt>
-              <dd>{formatLength(s.sill)}</dd>
-            </>
-          )}
-          <dt>Anchored</dt>
-          <dd>from {s.anchor}</dd>
-          <dt>Layer</dt>
-          <dd>{eff.layer}</dd>
-        </dl>
-        <p className="hint">Drag it along its wall to move.</p>
-        <button className="danger" onClick={deleteSelection}>
-          Delete
-        </button>
-      </div>
-    );
-  }
-
-  if (eff.stmt.kind === "fixture") {
-    const s = eff.stmt;
-    return (
-      <div className="panel">
-        <h3>Fixture {selection}</h3>
-        <dl>
-          <dt>Kind</dt>
-          <dd>{s.fixKind}</dd>
-          <dt>Size</dt>
-          <dd>
-            {formatLength(s.w)} × {formatLength(s.d)}
-          </dd>
-          <dt>Rotation</dt>
-          <dd>{s.rot}°</dd>
-        </dl>
-        <div className="tool-group" style={{ marginBottom: 8 }}>
-          <button onClick={() => useApp.getState().rotateFixture(selection)}>Rotate 90°</button>
-        </div>
-        <button className="danger" onClick={deleteSelection}>
-          Delete
-        </button>
-      </div>
-    );
-  }
-
-  if (eff.stmt.kind === "meas") {
-    const s = eff.stmt;
-    return (
-      <div className="panel">
-        <h3>Measurement {selection}</h3>
-        <dl>
-          <dt>Span</dt>
-          <dd>
-            {s.a} → {s.b}
-          </dd>
-          <dt>Value</dt>
-          <dd>{formatLength(s.value)}</dd>
-          {s.date !== undefined && (
-            <>
-              <dt>Taped</dt>
-              <dd>{s.date}</dd>
-            </>
-          )}
-        </dl>
-        <button className="danger" onClick={deleteSelection}>
-          Delete
-        </button>
-      </div>
-    );
-  }
-
-  return null;
 }
+
+/* ------------------------------------------------------------------- app */
+
+const TOOL_KEYS: Record<string, Tool> = {
+  v: "select",
+  w: "wall",
+  m: "measure",
+  d: "door",
+  n: "window",
+  f: "fixture",
+};
 
 export default function App(): JSX.Element {
   const boot = useApp((s) => s.boot);
@@ -572,12 +1091,17 @@ export default function App(): JSX.Element {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "z") return;
       const target = e.target as HTMLElement;
-      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
-      e.preventDefault();
-      if (e.shiftKey) redo();
-      else undo();
+      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT") return;
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+        return;
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const tool = TOOL_KEYS[e.key.toLowerCase()];
+      if (tool !== undefined) useApp.getState().setTool(tool);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -588,19 +1112,23 @@ export default function App(): JSX.Element {
 
   return (
     <div className="app">
-      <Toolbar />
+      <TopBar />
       <div className="main">
-        {viewMode !== "3d" && <Plan2D key={`plan-${sceneEpoch}`} />}
-        {viewMode !== "2d" && <View3D key={`view3d-${sceneEpoch}`} />}
+        <ToolRail />
+        <div className="canvas">
+          {viewMode !== "3d" && <Plan2D key={`plan-${sceneEpoch}`} />}
+          {viewMode !== "2d" && <View3D key={`view3d-${sceneEpoch}`} />}
+          <TitleBlock />
+        </div>
         <div className="sidebar">
           <SelectionPanel />
           <DiagnosticsPanel />
           <ParamsPanel />
           <div className="panel hint-panel">
             <p className="hint">
-              <b>Select</b>: click/drag, ⌫ deletes, ⌘Z undoes. <b>Wall</b>: click to chain, Esc
-              ends. <b>Measure</b>: click a wall, or two junctions for a diagonal, then type the
-              tape reading. Scroll pans, pinch/⌘-scroll zooms.
+              Click a value to edit it. <b>Measure</b>: click a wall, or two junctions for a
+              diagonal, then type the tape reading. Scroll pans, pinch/⌘-scroll zooms — in 2D
+              and 3D. ⌫ deletes, ⌘Z undoes.
             </p>
           </div>
         </div>

@@ -354,7 +354,7 @@ export const useApp = create<AppState>((set, get) => ({
       eff.stmt.kind !== "opening" &&
       eff.stmt.kind !== "fixture"
     ) {
-      get().showToast("Only walls, junctions, measurements, openings, and fixtures can be deleted", "info");
+      get().showToast("This can't be deleted directly", "info");
       return;
     }
     try {

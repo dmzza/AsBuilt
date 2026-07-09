@@ -7,7 +7,9 @@ import {
   proposeAddOpening,
   proposeDelete,
   proposeSetFixture,
+  proposeSetOpening,
   proposeSetOpeningOffset,
+  proposeSetWallType,
 } from "../editkit";
 import { fixtureViews, openingViews, resolveAndSolve } from "../model";
 import { parseLayerFile } from "../parser";
@@ -167,5 +169,52 @@ describe("opening/fixture edit generators", () => {
     const asbuilt = fixtureViews(resolveAndSolve(layerMap(world), "asbuilt"))[0]!;
     expect(asbuilt.x).toBeCloseTo(IN("3'"), 3);
     expect(asbuilt.rot).toBe(0);
+  });
+
+  test("proposeSetOpening edits width/sill in place", () => {
+    const project0 = loadProject({ "asbuilt.abl": BASE });
+    const add = proposeAddOpening(project0, "asbuilt", {
+      wall: "k.north",
+      opKind: "window",
+      centerAlong: IN("6'"),
+    });
+    let world = applyEdits(project0, add.edits);
+    world = applyEdits(
+      world,
+      proposeSetOpening(world, "asbuilt", add.name, {
+        width: parseLength(`4'-0"`),
+        sill: parseLength(`3'-0"`),
+      }),
+    );
+    const p = resolveAndSolve(layerMap(world), "asbuilt");
+    expect(p.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    const [v] = openingViews(p);
+    expect(v!.widthInches).toBeCloseTo(IN("4'"), 3);
+    expect(v!.sillInches).toBeCloseTo(IN("3'"), 3);
+  });
+
+  test("proposeSetWallType: unknown type throws; expanded wall is shadowed", () => {
+    const base = `layer asbuilt
+
+walltype ext_2x6 { thickness: 6 1/2" }
+walltype int_2x4 { thickness: 4 1/2" }
+
+param k.depth = 10'-0" [measured 2026-07-01]
+param k.width = 12'-0" [approximated]
+
+room k : rect(k.width, k.depth) { walls: int_2x4 }
+`;
+    const project = loadProject({ "asbuilt.abl": base });
+    expect(() => proposeSetWallType(project, "asbuilt", "k.north", "nope")).toThrow(
+      /no walltype/,
+    );
+    // k.north comes from the rect template: the edit restates (shadows) it
+    const edits = proposeSetWallType(project, "asbuilt", "k.north", "ext_2x6");
+    expect(edits[0]!.kind).toBe("append");
+    const world = applyEdits(project, edits);
+    const p = resolveAndSolve(layerMap(world), "asbuilt");
+    expect(p.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    const eff = p.resolved.effective.get("k.north")!;
+    expect(eff.stmt.kind === "wall" && eff.stmt.wallType).toBe("ext_2x6");
   });
 });
