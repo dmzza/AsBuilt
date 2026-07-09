@@ -28,16 +28,35 @@ export const GRADE_COLORS: Record<Grade, string> = {
   drawn: "#6b7280",
 };
 
+/** The vellum sheet: everything drawn on the 2D canvas keys off this palette. */
+export const SHEET = {
+  paper: "#f5f3ec",
+  grid: "#edebe0",
+  gridMajor: "#e2dfd1",
+  ink: "#35322b",
+  hardware: "#8b8779", // junction rings, fixture outlines
+  label: "#6d6a5f",
+  select: "#2563eb",
+  conflict: "#c22a2a",
+};
+
+const MONO = 'ui-monospace, "SF Mono", Menlo, monospace';
+const SERIF = 'Georgia, "Times New Roman", serif';
+
 interface View {
   cx: number; // world center, inches
   cy: number;
   ppi: number; // pixels per inch
 }
 
+/** sx/sy = pointer-down screen position: pointerup within CLICK_PX of it is a
+ *  click (select only), never an edit. */
 type DragState =
-  | { kind: "junction"; key: string; wx: number; wy: number }
-  | { kind: "opening"; key: string; centerAlong: number }
-  | { kind: "fixture"; key: string; wx: number; wy: number };
+  | { kind: "junction"; key: string; wx: number; wy: number; sx: number; sy: number }
+  | { kind: "opening"; key: string; centerAlong: number; sx: number; sy: number }
+  | { kind: "fixture"; key: string; wx: number; wy: number; sx: number; sy: number };
+
+const CLICK_PX = 3;
 
 const JUNCTION_SNAP_PX = 12;
 const GRID_INCH = 1; // drawing rounds to whole inches
@@ -453,6 +472,12 @@ export function Plan2D(): JSX.Element {
 
   const onPointerUp = (e: ReactPointerEvent<SVGSVGElement>): void => {
     if (drag !== null) {
+      // A press that never travelled is a click: select, don't edit.
+      if (Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < CLICK_PX) {
+        setDrag(null);
+        setPan(null);
+        return;
+      }
       // Use the release position itself: a fast flick (or synthetic drag) can
       // reach pointerup without any intermediate pointermove events.
       const rect = e.currentTarget.getBoundingClientRect();
@@ -481,7 +506,9 @@ export function Plan2D(): JSX.Element {
     e.stopPropagation();
     select(key);
     const p = geometry?.junctions.find((j) => j.key === key);
-    if (p !== undefined) setDrag({ kind: "junction", key, wx: p.x, wy: p.y });
+    if (p !== undefined) {
+      setDrag({ kind: "junction", key, wx: p.x, wy: p.y, sx: e.clientX, sy: e.clientY });
+    }
   };
 
   const startOpeningDrag = (key: string, e: ReactPointerEvent): void => {
@@ -495,7 +522,7 @@ export function Plan2D(): JSX.Element {
     const midX = (view.jambA.x + view.jambB.x) / 2;
     const midY = (view.jambA.y + view.jambB.y) / 2;
     const along = Math.hypot(midX - w.a.x, midY - w.a.y);
-    setDrag({ kind: "opening", key, centerAlong: along });
+    setDrag({ kind: "opening", key, centerAlong: along, sx: e.clientX, sy: e.clientY });
   };
 
   const startFixtureDrag = (key: string, e: ReactPointerEvent): void => {
@@ -503,7 +530,9 @@ export function Plan2D(): JSX.Element {
     e.stopPropagation();
     select(key);
     const f = fixtures.find((v) => v.key === key);
-    if (f !== undefined) setDrag({ kind: "fixture", key, wx: f.x, wy: f.y });
+    if (f !== undefined) {
+      setDrag({ kind: "fixture", key, wx: f.x, wy: f.y, sx: e.clientX, sy: e.clientY });
+    }
   };
 
   // --- grid lines
@@ -562,7 +591,7 @@ export function Plan2D(): JSX.Element {
             y1={g.y1}
             x2={g.x2}
             y2={g.y2}
-            stroke={g.major ? "#e4e4e7" : "#f1f1f4"}
+            stroke={g.major ? SHEET.gridMajor : SHEET.grid}
             strokeWidth={1}
           />
         ))}
@@ -580,7 +609,7 @@ export function Plan2D(): JSX.Element {
                 y1={a.y}
                 x2={b.x}
                 y2={b.y}
-                stroke={isSuspect ? "#dc2626" : isSel ? "#2563eb" : "#3f3f46"}
+                stroke={isSuspect ? SHEET.conflict : isSel ? SHEET.select : SHEET.ink}
                 strokeWidth={Math.max(w.th * view.ppi, 2)}
                 strokeLinecap="square"
                 style={{ cursor: "pointer" }}
@@ -598,7 +627,7 @@ export function Plan2D(): JSX.Element {
           const b = toScreen(o.jambB.x, o.jambB.y);
           const isSel = selection === o.key;
           const gapW = Math.max(w.th * view.ppi + 2, 4);
-          const color = o.overflow ? "#dc2626" : isSel ? "#2563eb" : "#3f3f46";
+          const color = o.overflow ? SHEET.conflict : isSel ? SHEET.select : SHEET.ink;
           // door swing: hinge at jambA, leaf into the room (toward centroid)
           let swing: JSX.Element | null = null;
           if (o.opKind === "door") {
@@ -632,7 +661,7 @@ export function Plan2D(): JSX.Element {
           return (
             <g key={o.key} style={{ cursor: "pointer" }} onPointerDown={(e) => startOpeningDrag(o.key, e)}>
               {/* the gap: erase the wall between the jambs */}
-              <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#fcfcfd" strokeWidth={gapW} />
+              <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={SHEET.paper} strokeWidth={gapW} />
               {o.opKind === "window" ? (
                 <>
                   <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={color} strokeWidth={1.2} />
@@ -670,8 +699,8 @@ export function Plan2D(): JSX.Element {
                 y={p.y}
                 width={fw * view.ppi}
                 height={fd * view.ppi}
-                fill={isSel ? "#dbeafe" : "#f4f4f5"}
-                stroke={isSel ? "#2563eb" : "#71717a"}
+                fill={isSel ? "#dbeafe" : "#eeece2"}
+                stroke={isSel ? SHEET.select : SHEET.hardware}
                 strokeWidth={1.2}
                 rx={2}
               />
@@ -682,7 +711,8 @@ export function Plan2D(): JSX.Element {
                   textAnchor="middle"
                   dominantBaseline="middle"
                   fontSize={10}
-                  fill="#52525b"
+                  fill={SHEET.label}
+                  fontFamily={MONO}
                   style={{ userSelect: "none", pointerEvents: "none" }}
                 >
                   {f.fixKind}
@@ -743,6 +773,7 @@ export function Plan2D(): JSX.Element {
               dominantBaseline="middle"
               fontSize={11}
               fill={GRADE_COLORS[grade]}
+              fontFamily={MONO}
               fontStyle={grade === "measured" || grade === "designed" ? "normal" : "italic"}
               style={{ userSelect: "none", pointerEvents: "none" }}
             >
@@ -762,7 +793,9 @@ export function Plan2D(): JSX.Element {
               y={s.y}
               textAnchor="middle"
               fontSize={13}
-              fill="#71717a"
+              fill="#8a8577"
+              fontFamily={SERIF}
+              letterSpacing="0.06em"
               fontStyle="italic"
               style={{ userSelect: "none", pointerEvents: "none" }}
             >
@@ -800,8 +833,8 @@ export function Plan2D(): JSX.Element {
               cx={s.x}
               cy={s.y}
               r={isSel || isPendingMeas ? 6 : 4.5}
-              fill={isSel ? "#2563eb" : isPendingMeas ? "#1d4ed8" : "#ffffff"}
-              stroke={isSel || isPendingMeas ? "#1d4ed8" : "#71717a"}
+              fill={isSel ? SHEET.select : isPendingMeas ? "#1d4ed8" : SHEET.paper}
+              stroke={isSel || isPendingMeas ? "#1d4ed8" : SHEET.hardware}
               strokeWidth={1.5}
               style={{
                 cursor: tool === "select" ? "grab" : "crosshair",
@@ -842,7 +875,7 @@ export function Plan2D(): JSX.Element {
             return (
               <g style={{ pointerEvents: "none" }}>
                 <circle cx={s.x} cy={s.y} r={6} fill="none" stroke="#2563eb" strokeWidth={2} strokeDasharray="3 3" />
-                <text x={s.x + 10} y={s.y - 10} fontSize={11} fill="#2563eb">
+                <text x={s.x + 10} y={s.y - 10} fontSize={11} fill="#2563eb" fontFamily={MONO}>
                   {formatLength(roundInch(drag.wx))}, {formatLength(roundInch(drag.wy))}
                 </text>
               </g>
@@ -890,7 +923,7 @@ export function Plan2D(): JSX.Element {
             return (
               <g style={{ pointerEvents: "none" }}>
                 <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#2563eb" strokeWidth={2} strokeDasharray="6 4" />
-                <text x={(a.x + b.x) / 2} y={(a.y + b.y) / 2 - 8} fontSize={11} fill="#2563eb" textAnchor="middle">
+                <text x={(a.x + b.x) / 2} y={(a.y + b.y) / 2 - 8} fontSize={11} fill="#2563eb" fontFamily={MONO} textAnchor="middle">
                   {formatLength(Math.round(len * 16) * 4)}
                   {ghost.axis !== undefined ? ` (${ghost.axis})` : ""}
                 </text>
@@ -944,7 +977,7 @@ interface DimProps {
  * anything else (diagonals, cross-room spans) renders as a direct dashed line.
  */
 function DimensionGraphic({ m, toScreen, ppi, centroid, selected, suspect, onDown }: DimProps): JSX.Element | null {
-  const color = suspect ? "#dc2626" : GRADE_COLORS.measured;
+  const color = suspect ? SHEET.conflict : GRADE_COLORS.measured;
   const width = selected ? 2 : 1.2;
   const text = formatLength(m.value);
 
@@ -966,7 +999,8 @@ function DimensionGraphic({ m, toScreen, ppi, centroid, selected, suspect, onDow
           textAnchor="middle"
           fontSize={11}
           fill={color}
-          stroke="#fcfcfd"
+          fontFamily={MONO}
+          stroke={SHEET.paper}
           strokeWidth={3}
           paintOrder="stroke"
           style={{ userSelect: "none" }}
@@ -1018,7 +1052,8 @@ function DimensionGraphic({ m, toScreen, ppi, centroid, selected, suspect, onDow
         fontSize={11}
         fontWeight={600}
         fill={color}
-        stroke="#fcfcfd"
+        fontFamily={MONO}
+        stroke={SHEET.paper}
         strokeWidth={3}
         paintOrder="stroke"
         style={{ userSelect: "none" }}

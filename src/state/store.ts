@@ -344,9 +344,11 @@ export const useApp = create<AppState>((set, get) => ({
     if (
       eff.stmt.kind !== "wall" &&
       eff.stmt.kind !== "junction" &&
-      eff.stmt.kind !== "meas"
+      eff.stmt.kind !== "meas" &&
+      eff.stmt.kind !== "opening" &&
+      eff.stmt.kind !== "fixture"
     ) {
-      get().showToast("Only walls, junctions, and measurements can be deleted", "info");
+      get().showToast("This can't be deleted directly", "info");
       return;
     }
     try {

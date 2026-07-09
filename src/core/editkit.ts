@@ -594,6 +594,37 @@ export function proposeSetFixture(
   return replaceOrShadow(project, branch, eff.layer, eff.expandedFrom, eff.stmt.loc.line, updated);
 }
 
+/** Change a wall's type (thickness follows the walltype). */
+export function proposeSetWallType(
+  project: Project,
+  branch: string,
+  name: string,
+  wallType: string,
+): TextEdit[] {
+  const pipeline = resolveAndSolve(layerMap(project), branch);
+  const eff = pipeline.resolved.effective.get(name);
+  if (eff?.stmt.kind !== "wall") throw new Error(`no wall "${name}"`);
+  if (pipeline.resolved.effective.get(wallType)?.stmt.kind !== "walltype") {
+    throw new Error(`no walltype "${wallType}"`);
+  }
+  const updated: WallStmt = { ...eff.stmt, wallType };
+  return replaceOrShadow(project, branch, eff.layer, eff.expandedFrom, eff.stmt.loc.line, updated);
+}
+
+/** Update an opening's width/height/sill. */
+export function proposeSetOpening(
+  project: Project,
+  branch: string,
+  name: string,
+  updates: Partial<Pick<OpeningStmt, "width" | "height" | "sill">>,
+): TextEdit[] {
+  const pipeline = resolveAndSolve(layerMap(project), branch);
+  const eff = pipeline.resolved.effective.get(name);
+  if (eff?.stmt.kind !== "opening") throw new Error(`no opening "${name}"`);
+  const updated: OpeningStmt = { ...eff.stmt, ...updates };
+  return replaceOrShadow(project, branch, eff.layer, eff.expandedFrom, eff.stmt.loc.line, updated);
+}
+
 /** In-place rewrite when the branch owns the authored line, shadow otherwise. */
 function replaceOrShadow(
   project: Project,
@@ -601,7 +632,7 @@ function replaceOrShadow(
   ownerLayer: string,
   expandedFrom: string | undefined,
   line: number,
-  updated: OpeningStmt | FixtureStmt,
+  updated: OpeningStmt | FixtureStmt | WallStmt,
 ): TextEdit[] {
   if (ownerLayer === branch && expandedFrom === undefined) {
     return [
