@@ -155,6 +155,25 @@ const WALL_RE = new RegExp(`^wall\\s+(${NAME})\\s*(\\{.*\\})$`);
 const ROOM_RE = new RegExp(`^room\\s+(${NAME})\\s*:\\s*rect\\((.*)\\)\\s*(\\{.*\\})?$`);
 const RECTILINEAR_RE = new RegExp(`^rectilinear\\s+(${NAME})\\.\\*$`);
 const AXIS_RE = new RegExp(`^axis\\s+(${NAME})\\s+(h|v)$`);
+const OPENING_RE = new RegExp(`^(door|window)\\s+(${NAME})\\s*(\\{.*\\})$`);
+const FIXTURE_RE = new RegExp(`^fixture\\s+(${NAME})\\s*(\\{.*\\})$`);
+
+/** `<expr> from <junction>` */
+function parseAt(text: string, loc: SrcLoc): { offset: Expr; anchor: string } {
+  const idx = text.lastIndexOf(" from ");
+  if (idx === -1) throw new AblParseError(loc, `at: expected "<offset> from <junction>"`);
+  return {
+    offset: parseExpr(text.slice(0, idx), loc),
+    anchor: parseName(text.slice(idx + " from ".length), loc),
+  };
+}
+
+/** `<len> x <len>` */
+function parseSize(text: string, loc: SrcLoc): { w: S64; h: S64 } {
+  const parts = text.split(/\s+x\s+/);
+  if (parts.length !== 2) throw new AblParseError(loc, `size: expected "<len> x <len>"`);
+  return { w: parseLen(parts[0]!, loc), h: parseLen(parts[1]!, loc) };
+}
 const LENGTH_RE = new RegExp(`^length\\(\\s*(${NAME})\\s*\\)\\s*=\\s*(.+)$`);
 const MEAS_RE = new RegExp(
   `^meas\\s+(${NAME})\\s*:\\s*dist\\(\\s*(${NAME})\\s*,\\s*(${NAME})\\s*\\)\\s*=\\s*(${LEN}?)(\\[[^\\]]*\\])?$`,
@@ -270,6 +289,51 @@ function parseStmtLine(line: Line, pendingComments: string[]): Stmt {
       name: `${m[1]!}.axis`,
       wall: m[1]!,
       orient: m[2] as "h" | "v",
+      loc,
+      leadingComments,
+    };
+  }
+
+  if ((m = OPENING_RE.exec(body))) {
+    const block = parseBlock(m[3]!, loc);
+    requireKeys(block, ["in", "at", "size"], ["sill"], loc);
+    const { offset, anchor } = parseAt(block.get("at")!, loc);
+    const { w, h } = parseSize(block.get("size")!, loc);
+    return {
+      kind: "opening",
+      opKind: m[1] as "door" | "window",
+      name: m[2]!,
+      wall: parseName(block.get("in")!, loc),
+      anchor,
+      offset,
+      width: w,
+      height: h,
+      sill: block.has("sill") ? parseLen(block.get("sill")!, loc) : undefined,
+      loc,
+      leadingComments,
+    };
+  }
+
+  if ((m = FIXTURE_RE.exec(body))) {
+    const block = parseBlock(m[2]!, loc);
+    requireKeys(block, ["kind", "at", "size"], ["rot"], loc);
+    const { w, h } = parseSize(block.get("size")!, loc);
+    let rot: 0 | 90 | 180 | 270 = 0;
+    if (block.has("rot")) {
+      const r = parseInt(block.get("rot")!, 10);
+      if (r !== 0 && r !== 90 && r !== 180 && r !== 270) {
+        throw new AblParseError(loc, `rot must be 0, 90, 180, or 270`);
+      }
+      rot = r;
+    }
+    return {
+      kind: "fixture",
+      name: m[1]!,
+      fixKind: parseName(block.get("kind")!, loc),
+      at: parsePoint(block.get("at")!, loc),
+      w,
+      d: h,
+      rot,
       loc,
       leadingComments,
     };

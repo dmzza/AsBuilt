@@ -10,6 +10,7 @@ import {
 import { fsAccessSupported } from "./persist";
 import { useApp } from "./state/store";
 import { GRADE_COLORS, Plan2D } from "./ui2d/Plan2D";
+import { View3D } from "./ui3d/View3D";
 
 function Toast(): JSX.Element | null {
   const toast = useApp((s) => s.toast);
@@ -65,6 +66,15 @@ function Toolbar(): JSX.Element {
         >
           Measure
         </button>
+        <button className={tool === "door" ? "active" : ""} onClick={() => setTool("door")}>
+          Door
+        </button>
+        <button className={tool === "window" ? "active" : ""} onClick={() => setTool("window")}>
+          Window
+        </button>
+        <button className={tool === "fixture" ? "active" : ""} onClick={() => setTool("fixture")}>
+          Fixture
+        </button>
         <select value={wallType} onChange={(e) => setWallType(e.target.value)}>
           {wallTypes.map((t) => (
             <option key={t} value={t}>
@@ -74,15 +84,38 @@ function Toolbar(): JSX.Element {
         </select>
       </div>
       <div className="spacer" />
+      <ViewToggle />
+      <div className="spacer" />
       <BranchPicker />
       <div className="spacer" />
       <div className="tool-group">
-        {fsAccessSupported() && <button onClick={() => void openFolder()}>Open Folder…</button>}
+        {fsAccessSupported() && <button onClick={() => void openFolder()}>Open…</button>}
         <button onClick={() => void saveAll()} disabled={dirtyCount === 0 || dirHandle === null}>
           Save{dirtyCount > 0 ? ` (${dirtyCount})` : ""}
         </button>
         <button onClick={loadDemo}>Demo</button>
       </div>
+    </div>
+  );
+}
+
+function ViewToggle(): JSX.Element {
+  const viewMode = useApp((s) => s.viewMode);
+  const setViewMode = useApp((s) => s.setViewMode);
+  return (
+    <div className="tool-group">
+      <button className={viewMode === "2d" ? "active" : ""} onClick={() => setViewMode("2d")}>
+        2D
+      </button>
+      <button className={viewMode === "3d" ? "active" : ""} onClick={() => setViewMode("3d")}>
+        3D
+      </button>
+      <button
+        className={viewMode === "split" ? "active" : ""}
+        onClick={() => setViewMode("split")}
+      >
+        Split
+      </button>
     </div>
   );
 }
@@ -441,6 +474,90 @@ function SelectionPanel(): JSX.Element | null {
     );
   }
 
+  if (eff.stmt.kind === "opening") {
+    const s = eff.stmt;
+    return (
+      <div className="panel">
+        <h3>
+          {s.opKind === "door" ? "Door" : "Window"} {selection}
+        </h3>
+        <dl>
+          <dt>In</dt>
+          <dd>{s.wall}</dd>
+          <dt>Size</dt>
+          <dd>
+            {formatLength(s.width)} × {formatLength(s.height)}
+          </dd>
+          {s.opKind === "window" && s.sill !== undefined && (
+            <>
+              <dt>Sill</dt>
+              <dd>{formatLength(s.sill)}</dd>
+            </>
+          )}
+          <dt>Anchored</dt>
+          <dd>from {s.anchor}</dd>
+          <dt>Layer</dt>
+          <dd>{eff.layer}</dd>
+        </dl>
+        <p className="hint">Drag it along its wall to move.</p>
+        <button className="danger" onClick={deleteSelection}>
+          Delete
+        </button>
+      </div>
+    );
+  }
+
+  if (eff.stmt.kind === "fixture") {
+    const s = eff.stmt;
+    return (
+      <div className="panel">
+        <h3>Fixture {selection}</h3>
+        <dl>
+          <dt>Kind</dt>
+          <dd>{s.fixKind}</dd>
+          <dt>Size</dt>
+          <dd>
+            {formatLength(s.w)} × {formatLength(s.d)}
+          </dd>
+          <dt>Rotation</dt>
+          <dd>{s.rot}°</dd>
+        </dl>
+        <div className="tool-group" style={{ marginBottom: 8 }}>
+          <button onClick={() => useApp.getState().rotateFixture(selection)}>Rotate 90°</button>
+        </div>
+        <button className="danger" onClick={deleteSelection}>
+          Delete
+        </button>
+      </div>
+    );
+  }
+
+  if (eff.stmt.kind === "meas") {
+    const s = eff.stmt;
+    return (
+      <div className="panel">
+        <h3>Measurement {selection}</h3>
+        <dl>
+          <dt>Span</dt>
+          <dd>
+            {s.a} → {s.b}
+          </dd>
+          <dt>Value</dt>
+          <dd>{formatLength(s.value)}</dd>
+          {s.date !== undefined && (
+            <>
+              <dt>Taped</dt>
+              <dd>{s.date}</dd>
+            </>
+          )}
+        </dl>
+        <button className="danger" onClick={deleteSelection}>
+          Delete
+        </button>
+      </div>
+    );
+  }
+
   return null;
 }
 
@@ -466,11 +583,14 @@ export default function App(): JSX.Element {
     return () => window.removeEventListener("keydown", onKey);
   }, [undo, redo]);
 
+  const viewMode = useApp((s) => s.viewMode);
+
   return (
     <div className="app">
       <Toolbar />
       <div className="main">
-        <Plan2D />
+        {viewMode !== "3d" && <Plan2D />}
+        {viewMode !== "2d" && <View3D />}
         <div className="sidebar">
           <SelectionPanel />
           <DiagnosticsPanel />

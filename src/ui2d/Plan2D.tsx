@@ -9,10 +9,13 @@ import {
 } from "react";
 import {
   allWallGrades,
+  fixtureViews,
   formatLength,
   junctionPos,
+  openingViews,
   s64FromInches,
   type Grade,
+  type OpeningView,
   type Pipeline,
   type S64,
 } from "../core";
@@ -31,11 +34,10 @@ interface View {
   ppi: number; // pixels per inch
 }
 
-interface DragState {
-  junction: string;
-  wx: number; // current world position of the ghost
-  wy: number;
-}
+type DragState =
+  | { kind: "junction"; key: string; wx: number; wy: number }
+  | { kind: "opening"; key: string; centerAlong: number }
+  | { kind: "fixture"; key: string; wx: number; wy: number };
 
 const JUNCTION_SNAP_PX = 12;
 const GRID_INCH = 1; // drawing rounds to whole inches
@@ -58,6 +60,10 @@ export function Plan2D(): JSX.Element {
   const deleteSelection = useApp((s) => s.deleteSelection);
   const setMeasurePending = useApp((s) => s.setMeasurePending);
   const openEditor = useApp((s) => s.openEditor);
+  const placeOpening = useApp((s) => s.placeOpening);
+  const moveOpening = useApp((s) => s.moveOpening);
+  const placeFixture = useApp((s) => s.placeFixture);
+  const moveFixture = useApp((s) => s.moveFixture);
 
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -173,6 +179,56 @@ export function Plan2D(): JSX.Element {
   const grades = useMemo(
     () => (pipeline === null ? new Map<string, { grade: Grade }>() : allWallGrades(pipeline)),
     [pipeline],
+  );
+
+  const openings = useMemo(
+    () => (pipeline === null ? [] : openingViews(pipeline)),
+    [pipeline],
+  );
+  const fixtures = useMemo(
+    () => (pipeline === null ? [] : fixtureViews(pipeline)),
+    [pipeline],
+  );
+
+  /** Nearest wall to a world point: distance and center-parameter along it. */
+  const nearestWall = useCallback(
+    (wx: number, wy: number): { key: string; along: number; dist: number } | null => {
+      if (geometry === null) return null;
+      let best: { key: string; along: number; dist: number } | null = null;
+      for (const w of geometry.walls) {
+        const vx = w.b.x - w.a.x;
+        const vy = w.b.y - w.a.y;
+        const len2 = vx * vx + vy * vy;
+        if (len2 < 0.01) continue;
+        const t = Math.max(0, Math.min(1, ((wx - w.a.x) * vx + (wy - w.a.y) * vy) / len2));
+        const px = w.a.x + vx * t;
+        const py = w.a.y + vy * t;
+        const dist = Math.hypot(wx - px, wy - py);
+        if (best === null || dist < best.dist) {
+          best = { key: w.key, along: t * Math.sqrt(len2), dist };
+        }
+      }
+      return best;
+    },
+    [geometry],
+  );
+
+  /** Recompute an opening's authored offset from a dropped center position. */
+  const openingOffsetFromCenter = useCallback(
+    (view: OpeningView, centerAlong: number): S64 | null => {
+      if (pipeline === null || geometry === null) return null;
+      const wallEff = pipeline.resolved.effective.get(view.wall);
+      if (wallEff?.stmt.kind !== "wall") return null;
+      const w = geometry.walls.find((g) => g.key === view.wall);
+      if (w === undefined) return null;
+      const len = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+      let start = Math.max(0, Math.min(centerAlong - view.widthInches / 2, len - view.widthInches));
+      start = Math.round(start);
+      const off =
+        view.anchor === wallEff.stmt.from ? start : Math.round(len - start - view.widthInches);
+      return s64FromInches(Math.max(0, off));
+    },
+    [pipeline, geometry],
   );
 
   const suspects = useMemo(() => {
@@ -332,6 +388,19 @@ export function Plan2D(): JSX.Element {
       return;
     }
 
+    if (tool === "door" || tool === "window") {
+      const hit = nearestWall(wx, wy);
+      if (hit !== null && hit.dist < 18 / view.ppi) {
+        placeOpening(hit.key, hit.along);
+      }
+      return;
+    }
+
+    if (tool === "fixture") {
+      placeFixture({ x: roundInch(wx), y: roundInch(wy) });
+      return;
+    }
+
     // select tool: background press starts a pan
     setPan({ px: e.clientX, py: e.clientY });
     if (e.target === e.currentTarget) select(null);
@@ -377,7 +446,13 @@ export function Plan2D(): JSX.Element {
     setCursor({ wx, wy });
 
     if (drag !== null) {
-      setDrag({ ...drag, wx: Math.round(wx), wy: Math.round(wy) });
+      if (drag.kind === "opening") {
+        const view = openings.find((o) => o.key === drag.key);
+        const hit = view !== undefined ? nearestWallAlong(geometry, view.wall, wx, wy) : null;
+        if (hit !== null) setDrag({ ...drag, centerAlong: hit });
+      } else {
+        setDrag({ ...drag, wx: Math.round(wx), wy: Math.round(wy) });
+      }
       return;
     }
     if (pan !== null && tool === "select") {
@@ -394,11 +469,20 @@ export function Plan2D(): JSX.Element {
       // reach pointerup without any intermediate pointermove events.
       const rect = e.currentTarget.getBoundingClientRect();
       const { wx, wy } = toWorld(e.clientX - rect.left, e.clientY - rect.top);
-      const moved = Math.hypot(wx - drag.wx, wy - drag.wy) > 0.01 ? { wx, wy } : drag;
-      dragJunction(drag.junction, {
-        x: roundInch(moved.wx),
-        y: roundInch(moved.wy),
-      });
+      if (drag.kind === "junction") {
+        const moved = Math.hypot(wx - drag.wx, wy - drag.wy) > 0.01 ? { wx, wy } : drag;
+        dragJunction(drag.key, { x: roundInch(moved.wx), y: roundInch(moved.wy) });
+      } else if (drag.kind === "fixture") {
+        const moved = Math.hypot(wx - drag.wx, wy - drag.wy) > 0.01 ? { wx, wy } : drag;
+        moveFixture(drag.key, { x: roundInch(moved.wx), y: roundInch(moved.wy) });
+      } else {
+        const view = openings.find((o) => o.key === drag.key);
+        const along = nearestWallAlong(geometry, view?.wall ?? "", wx, wy) ?? drag.centerAlong;
+        if (view !== undefined) {
+          const off = openingOffsetFromCenter(view, along);
+          if (off !== null) moveOpening(drag.key, off);
+        }
+      }
       setDrag(null);
     }
     setPan(null);
@@ -409,7 +493,29 @@ export function Plan2D(): JSX.Element {
     e.stopPropagation();
     select(key);
     const p = geometry?.junctions.find((j) => j.key === key);
-    if (p !== undefined) setDrag({ junction: key, wx: p.x, wy: p.y });
+    if (p !== undefined) setDrag({ kind: "junction", key, wx: p.x, wy: p.y });
+  };
+
+  const startOpeningDrag = (key: string, e: ReactPointerEvent): void => {
+    if (tool !== "select") return;
+    e.stopPropagation();
+    select(key);
+    const view = openings.find((o) => o.key === key);
+    if (view === undefined || geometry === null) return;
+    const w = geometry.walls.find((g) => g.key === view.wall);
+    if (w === undefined) return;
+    const midX = (view.jambA.x + view.jambB.x) / 2;
+    const midY = (view.jambA.y + view.jambB.y) / 2;
+    const along = Math.hypot(midX - w.a.x, midY - w.a.y);
+    setDrag({ kind: "opening", key, centerAlong: along });
+  };
+
+  const startFixtureDrag = (key: string, e: ReactPointerEvent): void => {
+    if (tool !== "select") return;
+    e.stopPropagation();
+    select(key);
+    const f = fixtures.find((v) => v.key === key);
+    if (f !== undefined) setDrag({ kind: "fixture", key, wx: f.x, wy: f.y });
   };
 
   // --- grid lines
@@ -496,6 +602,137 @@ export function Plan2D(): JSX.Element {
             </g>
           );
         })}
+
+        {/* openings: gap + door swing / window lines */}
+        {openings.map((o) => {
+          const w = geometry.walls.find((g) => g.key === o.wall);
+          if (w === undefined) return null;
+          const a = toScreen(o.jambA.x, o.jambA.y);
+          const b = toScreen(o.jambB.x, o.jambB.y);
+          const isSel = selection === o.key;
+          const gapW = Math.max(w.th * view.ppi + 2, 4);
+          const color = o.overflow ? "#dc2626" : isSel ? "#2563eb" : "#3f3f46";
+          // door swing: hinge at jambA, leaf into the room (toward centroid)
+          let swing: JSX.Element | null = null;
+          if (o.opKind === "door") {
+            let nx = -o.dir.y;
+            let ny = o.dir.x;
+            const midX = (o.jambA.x + o.jambB.x) / 2;
+            const midY = (o.jambA.y + o.jambB.y) / 2;
+            if (nx * (geometry.centroid.x - midX) + ny * (geometry.centroid.y - midY) < 0) {
+              nx = -nx;
+              ny = -ny;
+            }
+            const leafEnd = toScreen(
+              o.jambA.x + nx * o.widthInches,
+              o.jambA.y + ny * o.widthInches,
+            );
+            const r = Math.hypot(b.x - a.x, b.y - a.y);
+            const sweep = (leafEnd.x - a.x) * (b.y - a.y) - (leafEnd.y - a.y) * (b.x - a.x);
+            swing = (
+              <>
+                <line x1={a.x} y1={a.y} x2={leafEnd.x} y2={leafEnd.y} stroke={color} strokeWidth={1.2} />
+                <path
+                  d={`M ${leafEnd.x} ${leafEnd.y} A ${r} ${r} 0 0 ${sweep > 0 ? 1 : 0} ${b.x} ${b.y}`}
+                  fill="none"
+                  stroke={color}
+                  strokeWidth={0.8}
+                  strokeDasharray="3 3"
+                />
+              </>
+            );
+          }
+          return (
+            <g key={o.key} style={{ cursor: "pointer" }} onPointerDown={(e) => startOpeningDrag(o.key, e)}>
+              {/* the gap: erase the wall between the jambs */}
+              <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#fcfcfd" strokeWidth={gapW} />
+              {o.opKind === "window" ? (
+                <>
+                  <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={color} strokeWidth={1.2} />
+                  <line
+                    x1={a.x}
+                    y1={a.y}
+                    x2={b.x}
+                    y2={b.y}
+                    stroke={color}
+                    strokeWidth={Math.max(gapW * 0.55, 3)}
+                    opacity={0.18}
+                  />
+                </>
+              ) : (
+                swing
+              )}
+              {isSel && (
+                <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#2563eb" strokeWidth={2} opacity={0.6} strokeDasharray="4 3" />
+              )}
+            </g>
+          );
+        })}
+
+        {/* fixtures */}
+        {fixtures.map((f) => {
+          const rotated = f.rot === 90 || f.rot === 270;
+          const fw = rotated ? f.d : f.w;
+          const fd = rotated ? f.w : f.d;
+          const p = toScreen(f.x - fw / 2, f.y + fd / 2);
+          const isSel = selection === f.key;
+          return (
+            <g key={f.key} style={{ cursor: "grab" }} onPointerDown={(e) => startFixtureDrag(f.key, e)}>
+              <rect
+                x={p.x}
+                y={p.y}
+                width={fw * view.ppi}
+                height={fd * view.ppi}
+                fill={isSel ? "#dbeafe" : "#f4f4f5"}
+                stroke={isSel ? "#2563eb" : "#71717a"}
+                strokeWidth={1.2}
+                rx={2}
+              />
+              {fw * view.ppi > 30 && (
+                <text
+                  x={p.x + (fw * view.ppi) / 2}
+                  y={p.y + (fd * view.ppi) / 2}
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                  fontSize={10}
+                  fill="#52525b"
+                  style={{ userSelect: "none", pointerEvents: "none" }}
+                >
+                  {f.fixKind}
+                </text>
+              )}
+            </g>
+          );
+        })}
+
+        {/* door/window placement ghost */}
+        {(tool === "door" || tool === "window") &&
+          cursor !== null &&
+          (() => {
+            const hit = nearestWall(cursor.wx, cursor.wy);
+            if (hit === null || hit.dist > 18 / view.ppi) return null;
+            const w = geometry.walls.find((g) => g.key === hit.key);
+            if (w === undefined) return null;
+            const len = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+            const ux = (w.b.x - w.a.x) / len;
+            const uy = (w.b.y - w.a.y) / len;
+            const gw = tool === "door" ? 32 : 36;
+            const start = Math.max(0, Math.min(hit.along - gw / 2, len - gw));
+            const a = toScreen(w.a.x + ux * start, w.a.y + uy * start);
+            const b = toScreen(w.a.x + ux * (start + gw), w.a.y + uy * (start + gw));
+            return (
+              <line
+                x1={a.x}
+                y1={a.y}
+                x2={b.x}
+                y2={b.y}
+                stroke="#2563eb"
+                strokeWidth={Math.max(w.th * view.ppi, 6)}
+                opacity={0.45}
+                style={{ pointerEvents: "none" }}
+              />
+            );
+          })()}
 
         {/* wall length labels */}
         {geometry.walls.map((w) => {
@@ -610,8 +847,9 @@ export function Plan2D(): JSX.Element {
             );
           })()}
 
-        {/* junction drag ghost */}
+        {/* drag ghosts */}
         {drag !== null &&
+          drag.kind !== "opening" &&
           (() => {
             const s = toScreen(drag.wx, drag.wy);
             return (
@@ -621,6 +859,37 @@ export function Plan2D(): JSX.Element {
                   {formatLength(roundInch(drag.wx))}, {formatLength(roundInch(drag.wy))}
                 </text>
               </g>
+            );
+          })()}
+        {drag !== null &&
+          drag.kind === "opening" &&
+          (() => {
+            const ov = openings.find((o) => o.key === drag.key);
+            const w = geometry.walls.find((g) => g.key === ov?.wall);
+            if (ov === undefined || w === undefined) return null;
+            const len = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y);
+            const ux = (w.b.x - w.a.x) / len;
+            const uy = (w.b.y - w.a.y) / len;
+            const start = Math.max(
+              0,
+              Math.min(drag.centerAlong - ov.widthInches / 2, len - ov.widthInches),
+            );
+            const a = toScreen(w.a.x + ux * start, w.a.y + uy * start);
+            const b = toScreen(
+              w.a.x + ux * (start + ov.widthInches),
+              w.a.y + uy * (start + ov.widthInches),
+            );
+            return (
+              <line
+                x1={a.x}
+                y1={a.y}
+                x2={b.x}
+                y2={b.y}
+                stroke="#2563eb"
+                strokeWidth={Math.max(w.th * view.ppi, 6)}
+                opacity={0.5}
+                style={{ pointerEvents: "none" }}
+              />
             );
           })()}
 
@@ -644,6 +913,26 @@ export function Plan2D(): JSX.Element {
       </svg>
     </div>
   );
+}
+
+/** Project a world point onto a specific wall; inches along it from its from-end. */
+function nearestWallAlong(
+  geometry: {
+    walls: { key: string; a: { x: number; y: number }; b: { x: number; y: number } }[];
+  } | null,
+  wallKey: string,
+  wx: number,
+  wy: number,
+): number | null {
+  if (geometry === null) return null;
+  const w = geometry.walls.find((g) => g.key === wallKey);
+  if (w === undefined) return null;
+  const vx = w.b.x - w.a.x;
+  const vy = w.b.y - w.a.y;
+  const len2 = vx * vx + vy * vy;
+  if (len2 < 0.01) return null;
+  const t = Math.max(0, Math.min(1, ((wx - w.a.x) * vx + (wy - w.a.y) * vy) / len2));
+  return t * Math.sqrt(len2);
 }
 
 interface DimProps {
