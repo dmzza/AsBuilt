@@ -52,12 +52,54 @@ export interface Pipeline {
   diagnostics: Diagnostic[];
 }
 
-/** Anchor convention: the sw corner of every expanded rect room. */
+/**
+ * Anchor convention: one junction per connected component of the wall graph
+ * fixes the translation gauge — without it, every parameter's sensitivity
+ * smears across every junction of the component. Expanded rect rooms anchor
+ * their sw corner; authored components anchor their lexicographically first
+ * junction (deterministic across solves).
+ */
 export function defaultAnchors(resolved: Resolved): Set<string> {
   const anchors = new Set<string>();
   for (const [key, eff] of resolved.effective) {
     if (eff.stmt.kind !== "junction") continue;
     if (eff.expandedFrom !== undefined && key.endsWith(".sw")) anchors.add(key);
+  }
+
+  // union-find over junctions connected by walls
+  const parent = new Map<string, string>();
+  const find = (a: string): string => {
+    let root = a;
+    while (parent.get(root) !== root) root = parent.get(root)!;
+    let cur = a;
+    while (parent.get(cur) !== root) {
+      const next = parent.get(cur)!;
+      parent.set(cur, root);
+      cur = next;
+    }
+    return root;
+  };
+  const union = (a: string, b: string): void => {
+    if (!parent.has(a)) parent.set(a, a);
+    if (!parent.has(b)) parent.set(b, b);
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
+  for (const [, eff] of resolved.effective) {
+    if (eff.stmt.kind === "wall") union(eff.stmt.from, eff.stmt.to);
+  }
+
+  const componentBest = new Map<string, string>(); // root -> smallest junction
+  const componentAnchored = new Set<string>();
+  for (const j of parent.keys()) {
+    const root = find(j);
+    if (anchors.has(j)) componentAnchored.add(root);
+    const best = componentBest.get(root);
+    if (best === undefined || j < best) componentBest.set(root, j);
+  }
+  for (const [root, best] of componentBest) {
+    if (!componentAnchored.has(root)) anchors.add(best);
   }
   return anchors;
 }
