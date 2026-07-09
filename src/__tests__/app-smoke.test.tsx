@@ -74,6 +74,78 @@ describe("app smoke (jsdom)", () => {
     expect(container.textContent).toContain(`(11'-6")`);
   });
 
+  test("measure flow via editor: value commit, contradiction, resolution, undo", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    // measure the kitchen north wall (bound to k.width) through the editor
+    await act(async () => {
+      useApp.getState().openEditor({
+        target: { kind: "measure-wall", wall: "k.north" },
+        anchor: { x: 100, y: 100 },
+        initial: "",
+        label: "Measured k.north",
+      });
+    });
+    expect(container.textContent).toContain("Measured k.north");
+    let err: string | null = null;
+    await act(async () => {
+      err = useApp.getState().commitEditor("11 8 1/2");
+    });
+    expect(err).toBeNull();
+    // routed to the param, not a duplicate meas
+    const asbuilt = useApp.getState().project!.files.get("asbuilt.abl")!;
+    expect(asbuilt).toContain(`param k.width = 11'-8 1/2" [measured`);
+    expect(asbuilt).not.toContain("meas m1");
+
+    // bad input reports, doesn't apply
+    await act(async () => {
+      useApp.getState().openEditor({
+        target: { kind: "param", name: "k.depth", prov: "measured" },
+        anchor: { x: 100, y: 100 },
+        initial: "",
+        label: "k.depth",
+      });
+    });
+    await act(async () => {
+      err = useApp.getState().commitEditor("garbage");
+    });
+    expect(err).toMatch(/Cannot parse/);
+
+    // diagonal that disagrees -> contradiction card with suspect rows
+    await act(async () => {
+      useApp.getState().closeEditor();
+      useApp.getState().openEditor({
+        target: { kind: "measure-pair", a: "k.sw", b: "k.ne" },
+        anchor: { x: 100, y: 100 },
+        initial: "",
+        label: "diag",
+      });
+    });
+    await act(async () => {
+      err = useApp.getState().commitEditor("14'");
+    });
+    expect(err).toBeNull();
+    expect(useApp.getState().pipeline!.solution.contradictions.length).toBeGreaterThan(0);
+    expect(container.textContent).toContain("Measurements disagree");
+    expect(container.textContent).toContain("Pick what gives");
+
+    // undo the diagonal -> contradiction clears
+    await act(async () => {
+      useApp.getState().undo();
+    });
+    expect(useApp.getState().pipeline!.solution.contradictions).toEqual([]);
+    expect(useApp.getState().project!.files.get("asbuilt.abl")!).not.toContain("meas m1");
+
+    // redo brings it back
+    await act(async () => {
+      useApp.getState().redo();
+    });
+    expect(useApp.getState().pipeline!.solution.contradictions.length).toBeGreaterThan(0);
+  });
+
   test("wall tool store path: placing two points appends junctions + wall", async () => {
     root = createRoot(container);
     await act(async () => {

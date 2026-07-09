@@ -277,3 +277,84 @@ dd {
 .toast-error {
   background: #991b1b;
 }
+
+/* --- value editor popover --- */
+
+.value-editor {
+  position: fixed;
+  z-index: 40;
+  background: #ffffff;
+  border: 1px solid #d4d4d8;
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 0.16);
+  padding: 10px;
+  width: 220px;
+}
+
+.value-editor-label {
+  font-size: 12px;
+  color: #52525b;
+  margin-bottom: 6px;
+}
+
+.value-editor input {
+  width: 100%;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  padding: 5px 8px;
+  border: 1px solid #d4d4d8;
+  border-radius: 6px;
+}
+
+.value-editor input:focus {
+  outline: 2px solid #1d4ed8;
+  outline-offset: -1px;
+}
+
+.value-editor-error {
+  color: #b91c1c;
+  font-size: 11px;
+  margin-top: 5px;
+  line-height: 1.35;
+}
+
+.value-editor-hint {
+  color: #a1a1aa;
+  font-size: 10px;
+  margin-top: 5px;
+}
+
+/* --- contradiction suspect rows --- */
+
+.suspect-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 5px 7px;
+  background: #ffffff;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  color: #27272a;
+}
+
+.suspect-name {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.suspect-name em {
+  color: #71717a;
+}
+
+.suspect-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.suspect-actions button {
+  padding: 2px 8px;
+  font-size: 12px;
+}

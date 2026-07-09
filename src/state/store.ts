@@ -4,8 +4,11 @@ import {
   createConcept,
   layerMap,
   loadProject,
+  parseLength,
   proposeAddWall,
   proposeDelete,
+  proposeEditMeas,
+  proposeMeasure,
   proposeMove,
   proposeSetParam,
   resolveAndSolve,
@@ -19,7 +22,33 @@ import {
 import { DEMO_BRANCH, DEMO_FILES } from "../demo";
 import * as persist from "../persist";
 
-export type Tool = "select" | "wall";
+export type Tool = "select" | "wall" | "measure";
+
+export type EditorTarget =
+  | { kind: "param"; name: string; prov: Provenance }
+  | { kind: "param-measure"; name: string }
+  | { kind: "measure-wall"; wall: string }
+  | { kind: "measure-pair"; a: string; b: string }
+  | { kind: "meas-edit"; name: string };
+
+export interface EditorState {
+  target: EditorTarget;
+  /** Screen position to anchor the popover near. */
+  anchor: { x: number; y: number };
+  initial: string;
+  label: string;
+}
+
+interface Snapshot {
+  files: Record<string, string>;
+  branch: string;
+}
+
+const HISTORY_CAP = 100;
+
+function today(): string {
+  return new Date().toISOString().slice(0, 10);
+}
 
 interface AppState {
   project: Project | null;
@@ -32,6 +61,10 @@ interface AppState {
   tool: Tool;
   wallType: string;
   pendingStart: WallEndpoint | null;
+  measurePending: string | null;
+  editor: EditorState | null;
+  past: Snapshot[];
+  future: Snapshot[];
   toast: { message: string; kind: "info" | "error"; at: number } | null;
 
   boot(): void;
@@ -49,6 +82,13 @@ interface AppState {
   deleteSelection(): void;
   newConcept(name: string): void;
   setParam(name: string, value: S64, prov: Provenance): void;
+  setMeasurePending(junction: string | null): void;
+  openEditor(editor: EditorState): void;
+  closeEditor(): void;
+  /** Parse and apply the editor's entered value. Returns an error message or null. */
+  commitEditor(raw: string): string | null;
+  undo(): void;
+  redo(): void;
   showToast(message: string, kind?: "info" | "error"): void;
 }
 
@@ -88,6 +128,10 @@ export const useApp = create<AppState>((set, get) => ({
   tool: "select",
   wallType: "int_2x4",
   pendingStart: null,
+  measurePending: null,
+  editor: null,
+  past: [],
+  future: [],
   toast: null,
 
   boot() {
@@ -124,6 +168,10 @@ export const useApp = create<AppState>((set, get) => ({
       dirty: {},
       selection: null,
       pendingStart: null,
+      measurePending: null,
+      editor: null,
+      past: [],
+      future: [],
       wallType: firstWallType(project),
       ...compute(project, DEMO_BRANCH),
     });
@@ -148,6 +196,10 @@ export const useApp = create<AppState>((set, get) => ({
         dirty: {},
         selection: null,
         pendingStart: null,
+        measurePending: null,
+        editor: null,
+        past: [],
+        future: [],
         wallType: firstWallType(project),
         ...compute(project, branch),
       });
@@ -186,7 +238,7 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   setTool(tool) {
-    set({ tool, pendingStart: null });
+    set({ tool, pendingStart: null, measurePending: null });
   },
 
   setWallType(wallType) {
@@ -198,13 +250,20 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   runEdits(edits) {
-    const { project, branch, dirty } = get();
+    const { project, branch, dirty, past } = get();
     if (project === null || edits.length === 0) return;
     try {
+      const snapshot: Snapshot = { files: Object.fromEntries(project.files), branch };
       const next = applyEdits(project, edits);
       const touched: Record<string, true> = { ...dirty };
       for (const e of edits) touched[e.file] = true;
-      set({ project: next, dirty: touched, ...compute(next, branch) });
+      set({
+        project: next,
+        dirty: touched,
+        past: [...past.slice(-HISTORY_CAP + 1), snapshot],
+        future: [],
+        ...compute(next, branch),
+      });
       persist.autosave(next.files, branch);
     } catch (e) {
       get().showToast(`Edit failed: ${(e as Error).message}`, "error");
@@ -267,8 +326,12 @@ export const useApp = create<AppState>((set, get) => ({
     if (project === null || selection === null || pipeline === null) return;
     const eff = pipeline.resolved.effective.get(selection);
     if (eff === undefined) return;
-    if (eff.stmt.kind !== "wall" && eff.stmt.kind !== "junction") {
-      get().showToast("Only walls and junctions can be deleted here", "info");
+    if (
+      eff.stmt.kind !== "wall" &&
+      eff.stmt.kind !== "junction" &&
+      eff.stmt.kind !== "meas"
+    ) {
+      get().showToast("Only walls, junctions, and measurements can be deleted", "info");
       return;
     }
     try {
@@ -297,14 +360,13 @@ export const useApp = create<AppState>((set, get) => ({
     const { project, branch } = get();
     if (project === null) return;
     try {
-      const today = new Date().toISOString().slice(0, 10);
       const edits = proposeSetParam(
         project,
         branch,
         name,
         value,
         prov,
-        prov === "measured" ? today : undefined,
+        prov === "measured" ? today() : undefined,
       );
       get().runEdits(edits);
     } catch (e) {
@@ -312,7 +374,112 @@ export const useApp = create<AppState>((set, get) => ({
     }
   },
 
+  setMeasurePending(junction) {
+    set({ measurePending: junction });
+  },
+
+  openEditor(editor) {
+    set({ editor });
+  },
+
+  closeEditor() {
+    set({ editor: null });
+  },
+
+  commitEditor(raw) {
+    const { editor, project, branch } = get();
+    if (editor === null || project === null) return null;
+    let value: S64;
+    try {
+      value = parseLength(raw);
+    } catch (e) {
+      return (e as Error).message;
+    }
+    try {
+      const t = editor.target;
+      let edits: TextEdit[];
+      switch (t.kind) {
+        case "param":
+          edits = proposeSetParam(
+            project,
+            branch,
+            t.name,
+            value,
+            t.prov,
+            t.prov === "measured" ? today() : undefined,
+          );
+          break;
+        case "param-measure":
+          edits = proposeSetParam(project, branch, t.name, value, "measured", today());
+          break;
+        case "measure-wall":
+          edits = proposeMeasure(project, branch, { wall: t.wall }, value, today());
+          break;
+        case "measure-pair":
+          edits = proposeMeasure(project, branch, { a: t.a, b: t.b }, value, today());
+          break;
+        case "meas-edit":
+          edits = proposeEditMeas(project, branch, t.name, value, today());
+          break;
+      }
+      set({ editor: null, measurePending: null });
+      get().runEdits(edits);
+      return null;
+    } catch (e) {
+      return (e as Error).message;
+    }
+  },
+
+  undo() {
+    const { past, future, project, branch } = get();
+    const prev = past[past.length - 1];
+    if (prev === undefined || project === null) return;
+    try {
+      const restored = loadProject(prev.files);
+      set({
+        project: restored,
+        branch: prev.branch,
+        past: past.slice(0, -1),
+        future: [...future, { files: Object.fromEntries(project.files), branch }],
+        selection: null,
+        dirty: markAllDirty(prev.files),
+        ...compute(restored, prev.branch),
+      });
+      persist.autosave(restored.files, prev.branch);
+    } catch (e) {
+      get().showToast(`Undo failed: ${(e as Error).message}`, "error");
+    }
+  },
+
+  redo() {
+    const { past, future, project, branch } = get();
+    const next = future[future.length - 1];
+    if (next === undefined || project === null) return;
+    try {
+      const restored = loadProject(next.files);
+      set({
+        project: restored,
+        branch: next.branch,
+        future: future.slice(0, -1),
+        past: [...past, { files: Object.fromEntries(project.files), branch }],
+        selection: null,
+        dirty: markAllDirty(next.files),
+        ...compute(restored, next.branch),
+      });
+      persist.autosave(restored.files, next.branch);
+    } catch (e) {
+      get().showToast(`Redo failed: ${(e as Error).message}`, "error");
+    }
+  },
+
   showToast(message, kind = "info") {
     set({ toast: { message, kind, at: Date.now() } });
   },
 }));
+
+/** After undo/redo we can't know which files changed vs disk: mark all dirty. */
+function markAllDirty(files: Record<string, string>): Record<string, true> {
+  const out: Record<string, true> = {};
+  for (const path of Object.keys(files)) out[path] = true;
+  return out;
+}

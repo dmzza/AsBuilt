@@ -2,6 +2,7 @@ import {
   stmtKey,
   type AxisStmt,
   type JunctionStmt,
+  type MeasStmt,
   type ParamStmt,
   type ParsedLayer,
   type SetStmt,
@@ -420,6 +421,81 @@ export function proposeDelete(project: Project, branch: string, key: string): Te
     });
   }
   return edits;
+}
+
+export type MeasureTarget = { wall: string } | { a: string; b: string };
+
+/**
+ * Record a tape measurement. Measuring a wall whose length is bound to a
+ * single param makes THAT param measured (define-once: no duplicate truth).
+ * Anything else — unbound walls, diagonals, cross-room spans — appends a
+ * `meas` distance constraint between the two junctions.
+ */
+export function proposeMeasure(
+  project: Project,
+  branch: string,
+  target: MeasureTarget,
+  value: S64,
+  date?: string,
+): TextEdit[] {
+  const pipeline = resolveAndSolve(layerMap(project), branch);
+  let pair: { a: string; b: string };
+  if ("wall" in target) {
+    const wallEff = pipeline.resolved.effective.get(target.wall);
+    if (wallEff?.stmt.kind !== "wall") throw new Error(`no wall "${target.wall}"`);
+    const binding = pipeline.resolved.effective.get(`${target.wall}.length`);
+    if (binding?.stmt.kind === "length") {
+      const terms = binding.stmt.expr.terms;
+      const first = terms[0];
+      if (terms.length === 1 && first !== undefined && first.kind === "ref" && first.sign === 1) {
+        return proposeSetParam(project, branch, first.name, value, "measured", date);
+      }
+    }
+    pair = { a: wallEff.stmt.from, b: wallEff.stmt.to };
+  } else {
+    pair = target;
+  }
+  const name = genName(project, "m");
+  const meas: MeasStmt = {
+    kind: "meas",
+    name,
+    a: pair.a,
+    b: pair.b,
+    value,
+    date,
+    loc: { file: "", line: 0 },
+    leadingComments: [],
+  };
+  return [
+    { kind: "append", file: project.layers.get(branch)!.file, lines: [printStmt(meas)] },
+  ];
+}
+
+/** Change an existing meas value (in place if owned, shadowed if inherited). */
+export function proposeEditMeas(
+  project: Project,
+  branch: string,
+  name: string,
+  value: S64,
+  date?: string,
+): TextEdit[] {
+  const pipeline = resolveAndSolve(layerMap(project), branch);
+  const eff = pipeline.resolved.effective.get(name);
+  if (eff?.stmt.kind !== "meas") throw new Error(`no meas "${name}"`);
+  const updated: MeasStmt = { ...eff.stmt, value, date: date ?? eff.stmt.date };
+  if (eff.layer === branch && eff.expandedFrom === undefined) {
+    return [
+      {
+        kind: "replace-line",
+        file: project.layers.get(eff.layer)!.file,
+        line: eff.stmt.loc.line,
+        newText: printStmt(updated),
+      },
+    ];
+  }
+  return [
+    { kind: "append", file: project.layers.get(branch)!.file, lines: [printStmt(updated)] },
+  ];
 }
 
 /** Create a new concept layer file branching from `parent`. */
