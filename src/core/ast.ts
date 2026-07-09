@@ -101,6 +101,37 @@ export interface LengthStmt extends StmtBase {
   expr: Expr;
 }
 
+/**
+ * `door d1 { in: k.north, at: 2'-0" from k.nw, size: 2'-8" x 6'-8" }`
+ * `window w1 { in: k.north, at: 5'-0" from k.ne, size: 3'-0" x 3'-0", sill: 2'-6" }`
+ * Hosted once in a wall; `at` is the along-wall offset from an endpoint
+ * junction of that wall to the near jamb, so host corrections keep the
+ * opening where it was meant relative to its anchor.
+ */
+export interface OpeningStmt extends StmtBase {
+  kind: "opening";
+  opKind: "door" | "window";
+  name: string;
+  wall: string;
+  /** Endpoint junction of `wall` the offset is measured from. */
+  anchor: string;
+  offset: Expr;
+  width: S64;
+  height: S64;
+  sill?: S64;
+}
+
+/** `fixture f1 { kind: fridge, at: ~(x, y), size: 3'-0" x 2'-6", rot: 90 }` */
+export interface FixtureStmt extends StmtBase {
+  kind: "fixture";
+  name: string;
+  fixKind: string;
+  at: Point;
+  w: S64;
+  d: S64;
+  rot: 0 | 90 | 180 | 270;
+}
+
 /** `meas name : dist(a, b) = len [measured ...]` */
 export interface MeasStmt extends StmtBase {
   kind: "meas";
@@ -143,6 +174,8 @@ export type Stmt =
   | SetStmt
   | JunctionStmt
   | WallStmt
+  | OpeningStmt
+  | FixtureStmt
   | RoomRectStmt
   | RectilinearStmt
   | AxisStmt
@@ -163,6 +196,8 @@ export function stmtKey(s: Stmt): string | null {
     case "param":
     case "junction":
     case "wall":
+    case "opening":
+    case "fixture":
     case "room":
     case "meas":
     case "space":

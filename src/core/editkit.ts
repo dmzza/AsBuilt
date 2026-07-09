@@ -1,10 +1,13 @@
 import {
   stmtKey,
   type AxisStmt,
+  type FixtureStmt,
   type JunctionStmt,
   type MeasStmt,
+  type OpeningStmt,
   type ParamStmt,
   type ParsedLayer,
+  type Point,
   type SetStmt,
   type WallStmt,
 } from "./ast";
@@ -468,6 +471,168 @@ export function proposeMeasure(
   };
   return [
     { kind: "append", file: project.layers.get(branch)!.file, lines: [printStmt(meas)] },
+  ];
+}
+
+export const OPENING_DEFAULTS = {
+  door: { width: 32 * 64, height: 80 * 64 }, // 2'-8" x 6'-8"
+  window: { width: 36 * 64, height: 36 * 64, sill: 30 * 64 }, // 3' x 3', sill 2'-6"
+} as const;
+
+/**
+ * Place a door/window in a wall at a point along it (inches from the wall's
+ * `from` end). The anchor is the nearer endpoint — offsets stay short and
+ * survive far-end corrections. Offset is to the near jamb, rounded to 1".
+ */
+export function proposeAddOpening(
+  project: Project,
+  branch: string,
+  args: {
+    wall: string;
+    opKind: "door" | "window";
+    /** Desired center position along the wall, inches from its `from` end. */
+    centerAlong: number;
+    width?: S64;
+    height?: S64;
+    sill?: S64;
+  },
+): { edits: TextEdit[]; name: string } {
+  const pipeline = resolveAndSolve(layerMap(project), branch);
+  const wallEff = pipeline.resolved.effective.get(args.wall);
+  if (wallEff?.stmt.kind !== "wall") throw new Error(`no wall "${args.wall}"`);
+  const a = pipeline.resolved.effective.get(wallEff.stmt.from);
+  const b = pipeline.resolved.effective.get(wallEff.stmt.to);
+  if (a?.stmt.kind !== "junction" || b?.stmt.kind !== "junction") {
+    throw new Error(`wall "${args.wall}" has unresolved endpoints`);
+  }
+  const defaults = OPENING_DEFAULTS[args.opKind];
+  const width = args.width ?? defaults.width;
+  const widthIn = width / 64;
+
+  // wall length from the solved model
+  const pa = pipelineJunction(pipeline, wallEff.stmt.from);
+  const pb = pipelineJunction(pipeline, wallEff.stmt.to);
+  const len = Math.hypot(pb.x - pa.x, pb.y - pa.y);
+  if (widthIn > len) throw new Error(`opening wider than wall (${Math.round(len)}")`);
+
+  let startIn = Math.min(Math.max(args.centerAlong - widthIn / 2, 0), len - widthIn);
+  startIn = Math.round(startIn);
+
+  // anchor at the nearer end
+  const fromNearer = startIn + widthIn / 2 <= len / 2;
+  const anchor = fromNearer ? wallEff.stmt.from : wallEff.stmt.to;
+  const offsetIn = fromNearer ? startIn : Math.round(len - startIn - widthIn);
+
+  const name = genName(project, args.opKind === "door" ? "d" : "win");
+  const stmt: OpeningStmt = {
+    kind: "opening",
+    opKind: args.opKind,
+    name,
+    wall: args.wall,
+    anchor,
+    offset: { terms: [{ sign: 1, kind: "lit", value: s64FromInches(offsetIn) }] },
+    width,
+    height: args.height ?? defaults.height,
+    sill:
+      args.opKind === "window"
+        ? args.sill ?? (defaults as { sill: S64 }).sill
+        : args.sill,
+    loc: { file: "", line: 0 },
+    leadingComments: [],
+  };
+  return {
+    edits: [
+      { kind: "append", file: project.layers.get(branch)!.file, lines: [printStmt(stmt)] },
+    ],
+    name,
+  };
+}
+
+function pipelineJunction(pipeline: Pipeline, name: string): { x: number; y: number } {
+  const xi = pipeline.solution.system.varIndex.get(`j:${name}:x`);
+  const yi = pipeline.solution.system.varIndex.get(`j:${name}:y`);
+  if (xi === undefined || yi === undefined) throw new Error(`no junction "${name}"`);
+  return { x: pipeline.solution.x[xi]!, y: pipeline.solution.x[yi]! };
+}
+
+/** Slide an opening along its wall: rewrite its offset (from its anchor). */
+export function proposeSetOpeningOffset(
+  project: Project,
+  branch: string,
+  name: string,
+  offset: S64,
+): TextEdit[] {
+  const pipeline = resolveAndSolve(layerMap(project), branch);
+  const eff = pipeline.resolved.effective.get(name);
+  if (eff?.stmt.kind !== "opening") throw new Error(`no opening "${name}"`);
+  const updated: OpeningStmt = {
+    ...eff.stmt,
+    offset: { terms: [{ sign: 1, kind: "lit", value: offset }] },
+  };
+  return replaceOrShadow(project, branch, eff.layer, eff.expandedFrom, eff.stmt.loc.line, updated);
+}
+
+/** Place a free-standing fixture box. */
+export function proposeAddFixture(
+  project: Project,
+  branch: string,
+  args: { at: Point; fixKind?: string; w?: S64; d?: S64 },
+): { edits: TextEdit[]; name: string } {
+  const name = genName(project, "f");
+  const stmt: FixtureStmt = {
+    kind: "fixture",
+    name,
+    fixKind: args.fixKind ?? "fixture",
+    at: args.at,
+    w: args.w ?? 24 * 64,
+    d: args.d ?? 24 * 64,
+    rot: 0,
+    loc: { file: "", line: 0 },
+    leadingComments: [],
+  };
+  return {
+    edits: [
+      { kind: "append", file: project.layers.get(branch)!.file, lines: [printStmt(stmt)] },
+    ],
+    name,
+  };
+}
+
+/** Update a fixture's position/rotation/kind/size. */
+export function proposeSetFixture(
+  project: Project,
+  branch: string,
+  name: string,
+  updates: Partial<Pick<FixtureStmt, "at" | "rot" | "fixKind" | "w" | "d">>,
+): TextEdit[] {
+  const pipeline = resolveAndSolve(layerMap(project), branch);
+  const eff = pipeline.resolved.effective.get(name);
+  if (eff?.stmt.kind !== "fixture") throw new Error(`no fixture "${name}"`);
+  const updated: FixtureStmt = { ...eff.stmt, ...updates };
+  return replaceOrShadow(project, branch, eff.layer, eff.expandedFrom, eff.stmt.loc.line, updated);
+}
+
+/** In-place rewrite when the branch owns the authored line, shadow otherwise. */
+function replaceOrShadow(
+  project: Project,
+  branch: string,
+  ownerLayer: string,
+  expandedFrom: string | undefined,
+  line: number,
+  updated: OpeningStmt | FixtureStmt,
+): TextEdit[] {
+  if (ownerLayer === branch && expandedFrom === undefined) {
+    return [
+      {
+        kind: "replace-line",
+        file: project.layers.get(ownerLayer)!.file,
+        line,
+        newText: printStmt(updated),
+      },
+    ];
+  }
+  return [
+    { kind: "append", file: project.layers.get(branch)!.file, lines: [printStmt(updated)] },
   ];
 }
 
