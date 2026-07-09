@@ -50,11 +50,14 @@ export function Plan2D(): JSX.Element {
   const tool = useApp((s) => s.tool);
   const selection = useApp((s) => s.selection);
   const pendingStart = useApp((s) => s.pendingStart);
+  const measurePending = useApp((s) => s.measurePending);
   const select = useApp((s) => s.select);
   const dragJunction = useApp((s) => s.dragJunction);
   const placeWallPoint = useApp((s) => s.placeWallPoint);
   const cancelPending = useApp((s) => s.cancelPending);
   const deleteSelection = useApp((s) => s.deleteSelection);
+  const setMeasurePending = useApp((s) => s.setMeasurePending);
+  const openEditor = useApp((s) => s.openEditor);
 
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -119,6 +122,15 @@ export function Plan2D(): JSX.Element {
     }[] = [];
     const junctions: { key: string; x: number; y: number }[] = [];
     const spaces: { key: string; x: number; y: number }[] = [];
+    const measures: {
+      key: string;
+      a: { x: number; y: number };
+      b: { x: number; y: number };
+      value: number; // s64
+      adjacent: boolean;
+    }[] = [];
+    const wallPairs = new Set<string>();
+    const pairKey = (a: string, b: string): string => (a < b ? `${a}|${b}` : `${b}|${a}`);
     for (const [key, eff] of pipeline.resolved.effective) {
       const s = eff.stmt;
       if (s.kind === "wall") {
@@ -126,6 +138,7 @@ export function Plan2D(): JSX.Element {
         const b = junctionPos(pipeline.solution, s.to);
         if (a !== null && b !== null) {
           walls.push({ key, a, b, th: thickness.get(s.wallType) ?? 4.5 });
+          wallPairs.add(pairKey(s.from, s.to));
         }
       } else if (s.kind === "junction") {
         const p = junctionPos(pipeline.solution, key);
@@ -134,7 +147,27 @@ export function Plan2D(): JSX.Element {
         spaces.push({ key, x: s.at.x / 64, y: s.at.y / 64 });
       }
     }
-    return { walls, junctions, spaces };
+    for (const [key, eff] of pipeline.resolved.effective) {
+      const s = eff.stmt;
+      if (s.kind !== "meas") continue;
+      const a = junctionPos(pipeline.solution, s.a);
+      const b = junctionPos(pipeline.solution, s.b);
+      if (a !== null && b !== null) {
+        measures.push({ key, a, b, value: s.value, adjacent: wallPairs.has(pairKey(s.a, s.b)) });
+      }
+    }
+    // centroid for outward dimension offsets
+    let cx = 0;
+    let cy = 0;
+    for (const j of junctions) {
+      cx += j.x;
+      cy += j.y;
+    }
+    const centroid =
+      junctions.length > 0
+        ? { x: cx / junctions.length, y: cy / junctions.length }
+        : { x: 0, y: 0 };
+    return { walls, junctions, spaces, measures, centroid };
   }, [pipeline]);
 
   const grades = useMemo(
@@ -142,17 +175,23 @@ export function Plan2D(): JSX.Element {
     [pipeline],
   );
 
-  const suspectWalls = useMemo(() => {
+  const suspects = useMemo(() => {
     const out = new Set<string>();
     if (pipeline === null) return out;
     for (const c of pipeline.solution.contradictions) {
-      for (const s of c.suspects) {
-        if (s.endsWith(".length")) out.add(s.slice(0, -".length".length));
-        if (s.endsWith(".axis")) out.add(s.slice(0, -".axis".length));
-      }
+      for (const s of c.suspects) out.add(s);
     }
     return out;
   }, [pipeline]);
+
+  const suspectWalls = useMemo(() => {
+    const out = new Set<string>();
+    for (const s of suspects) {
+      if (s.endsWith(".length")) out.add(s.slice(0, -".length".length));
+      if (s.endsWith(".axis")) out.add(s.slice(0, -".axis".length));
+    }
+    return out;
+  }, [suspects]);
 
   // --- initial fit
   useEffect(() => {
@@ -211,6 +250,7 @@ export function Plan2D(): JSX.Element {
       if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
       if (e.key === "Escape") {
         cancelPending();
+        setMeasurePending(null);
         select(null);
         setDrag(null);
       } else if (e.key === "Delete" || e.key === "Backspace") {
@@ -219,7 +259,7 @@ export function Plan2D(): JSX.Element {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [cancelPending, select, deleteSelection]);
+  }, [cancelPending, select, deleteSelection, setMeasurePending]);
 
   // --- snapping helper
   const snap = useCallback(
@@ -286,9 +326,49 @@ export function Plan2D(): JSX.Element {
       return;
     }
 
+    if (tool === "measure") {
+      // background click abandons a half-made measurement
+      if (e.target === e.currentTarget) setMeasurePending(null);
+      return;
+    }
+
     // select tool: background press starts a pan
     setPan({ px: e.clientX, py: e.clientY });
     if (e.target === e.currentTarget) select(null);
+  };
+
+  const onJunctionDown = (key: string, e: ReactPointerEvent): void => {
+    if (tool === "measure") {
+      e.stopPropagation();
+      if (measurePending === null) {
+        setMeasurePending(key);
+      } else if (measurePending !== key) {
+        openEditor({
+          target: { kind: "measure-pair", a: measurePending, b: key },
+          anchor: { x: e.clientX, y: e.clientY },
+          initial: "",
+          label: `Measured ${measurePending} → ${key}`,
+        });
+      }
+      return;
+    }
+    startJunctionDrag(key, e);
+  };
+
+  const onWallDown = (key: string, e: ReactPointerEvent): void => {
+    if (tool === "measure") {
+      e.stopPropagation();
+      openEditor({
+        target: { kind: "measure-wall", wall: key },
+        anchor: { x: e.clientX, y: e.clientY },
+        initial: "",
+        label: `Measured length of ${key}`,
+      });
+      return;
+    }
+    if (tool !== "select") return;
+    e.stopPropagation();
+    select(key);
   };
 
   const onPointerMove = (e: ReactPointerEvent<SVGSVGElement>): void => {
@@ -411,11 +491,7 @@ export function Plan2D(): JSX.Element {
                 strokeWidth={Math.max(w.th * view.ppi, 2)}
                 strokeLinecap="square"
                 style={{ cursor: "pointer" }}
-                onPointerDown={(e) => {
-                  if (tool !== "select") return;
-                  e.stopPropagation();
-                  select(w.key);
-                }}
+                onPointerDown={(e) => onWallDown(w.key, e)}
               />
             </g>
           );
@@ -471,24 +547,68 @@ export function Plan2D(): JSX.Element {
           );
         })}
 
+        {/* measured dimensions */}
+        {geometry.measures.map((m) => (
+          <DimensionGraphic
+            key={m.key}
+            m={m}
+            toScreen={toScreen}
+            ppi={view.ppi}
+            centroid={geometry.centroid}
+            selected={selection === m.key}
+            suspect={suspects.has(m.key)}
+            onDown={(e) => {
+              if (tool !== "select") return;
+              e.stopPropagation();
+              select(m.key);
+            }}
+          />
+        ))}
+
         {/* junctions */}
         {geometry.junctions.map((j) => {
           const s = toScreen(j.x, j.y);
           const isSel = selection === j.key;
+          const isPendingMeas = measurePending === j.key;
           return (
             <circle
               key={j.key}
               cx={s.x}
               cy={s.y}
-              r={isSel ? 6 : 4.5}
-              fill={isSel ? "#2563eb" : "#ffffff"}
-              stroke={isSel ? "#1d4ed8" : "#71717a"}
+              r={isSel || isPendingMeas ? 6 : 4.5}
+              fill={isSel ? "#2563eb" : isPendingMeas ? "#1d4ed8" : "#ffffff"}
+              stroke={isSel || isPendingMeas ? "#1d4ed8" : "#71717a"}
               strokeWidth={1.5}
-              style={{ cursor: tool === "select" ? "grab" : "crosshair" }}
-              onPointerDown={(e) => startJunctionDrag(j.key, e)}
+              style={{
+                cursor: tool === "select" ? "grab" : "crosshair",
+              }}
+              onPointerDown={(e) => onJunctionDown(j.key, e)}
             />
           );
         })}
+
+        {/* measure tool ghost */}
+        {tool === "measure" &&
+          measurePending !== null &&
+          cursor !== null &&
+          (() => {
+            const p = geometry.junctions.find((j) => j.key === measurePending);
+            if (p === undefined) return null;
+            const a = toScreen(p.x, p.y);
+            const b = toScreen(cursor.wx, cursor.wy);
+            return (
+              <line
+                x1={a.x}
+                y1={a.y}
+                x2={b.x}
+                y2={b.y}
+                stroke="#1d4ed8"
+                strokeWidth={1.5}
+                strokeDasharray="4 4"
+                style={{ pointerEvents: "none" }}
+              />
+            );
+          })()}
 
         {/* junction drag ghost */}
         {drag !== null &&
@@ -504,7 +624,7 @@ export function Plan2D(): JSX.Element {
             );
           })()}
 
-        {/* wall tool ghost */}
+        {/* wall tool ghost (drawing) */}
         {ghost !== null &&
           pendingAnchor !== null &&
           (() => {
@@ -523,5 +643,112 @@ export function Plan2D(): JSX.Element {
           })()}
       </svg>
     </div>
+  );
+}
+
+interface DimProps {
+  m: {
+    key: string;
+    a: { x: number; y: number };
+    b: { x: number; y: number };
+    value: number;
+    adjacent: boolean;
+  };
+  toScreen: (wx: number, wy: number) => { x: number; y: number };
+  ppi: number;
+  centroid: { x: number; y: number };
+  selected: boolean;
+  suspect: boolean;
+  onDown: (e: ReactPointerEvent) => void;
+}
+
+/**
+ * A measured dimension. Wall-adjacent pairs render as offset architectural
+ * dimension lines (extension lines + oblique ticks, outside the building);
+ * anything else (diagonals, cross-room spans) renders as a direct dashed line.
+ */
+function DimensionGraphic({ m, toScreen, ppi, centroid, selected, suspect, onDown }: DimProps): JSX.Element | null {
+  const color = suspect ? "#dc2626" : GRADE_COLORS.measured;
+  const width = selected ? 2 : 1.2;
+  const text = formatLength(m.value);
+
+  const len = Math.hypot(m.b.x - m.a.x, m.b.y - m.a.y);
+  if (len < 0.01) return null;
+  const ux = (m.b.x - m.a.x) / len;
+  const uy = (m.b.y - m.a.y) / len;
+
+  if (!m.adjacent) {
+    const a = toScreen(m.a.x, m.a.y);
+    const b = toScreen(m.b.x, m.b.y);
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    return (
+      <g style={{ cursor: "pointer" }} onPointerDown={onDown}>
+        <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={color} strokeWidth={width} strokeDasharray="6 4" />
+        <text
+          x={mid.x}
+          y={mid.y - 6}
+          textAnchor="middle"
+          fontSize={11}
+          fill={color}
+          stroke="#fcfcfd"
+          strokeWidth={3}
+          paintOrder="stroke"
+          style={{ userSelect: "none" }}
+        >
+          {text}
+        </text>
+      </g>
+    );
+  }
+
+  // outward normal: away from the plan centroid
+  let nx = -uy;
+  let ny = ux;
+  const midW = { x: (m.a.x + m.b.x) / 2, y: (m.a.y + m.b.y) / 2 };
+  if (nx * (midW.x - centroid.x) + ny * (midW.y - centroid.y) < 0) {
+    nx = -nx;
+    ny = -ny;
+  }
+  const off = 26 / ppi;
+  const ext = 4 / ppi;
+  const a1 = toScreen(m.a.x + nx * off, m.a.y + ny * off);
+  const b1 = toScreen(m.b.x + nx * off, m.b.y + ny * off);
+  const a0 = toScreen(m.a.x, m.a.y);
+  const b0 = toScreen(m.b.x, m.b.y);
+  const aExt = toScreen(m.a.x + nx * (off + ext), m.a.y + ny * (off + ext));
+  const bExt = toScreen(m.b.x + nx * (off + ext), m.b.y + ny * (off + ext));
+  const mid = { x: (a1.x + b1.x) / 2, y: (a1.y + b1.y) / 2 };
+  const textPos = toScreen(
+    (m.a.x + m.b.x) / 2 + nx * (off + 10 / ppi),
+    (m.a.y + m.b.y) / 2 + ny * (off + 10 / ppi),
+  );
+  // oblique architectural ticks at each end of the dimension line
+  const tick = 5;
+  const tx = (ux + nx) * 0.7071;
+  const ty = (uy + ny) * 0.7071;
+  void mid;
+  return (
+    <g style={{ cursor: "pointer" }} onPointerDown={onDown}>
+      <line x1={a0.x} y1={a0.y} x2={aExt.x} y2={aExt.y} stroke={color} strokeWidth={0.8} />
+      <line x1={b0.x} y1={b0.y} x2={bExt.x} y2={bExt.y} stroke={color} strokeWidth={0.8} />
+      <line x1={a1.x} y1={a1.y} x2={b1.x} y2={b1.y} stroke={color} strokeWidth={width} />
+      <line x1={a1.x - tx * tick} y1={a1.y + ty * tick} x2={a1.x + tx * tick} y2={a1.y - ty * tick} stroke={color} strokeWidth={width} />
+      <line x1={b1.x - tx * tick} y1={b1.y + ty * tick} x2={b1.x + tx * tick} y2={b1.y - ty * tick} stroke={color} strokeWidth={width} />
+      <text
+        x={textPos.x}
+        y={textPos.y}
+        textAnchor="middle"
+        dominantBaseline="middle"
+        fontSize={11}
+        fontWeight={600}
+        fill={color}
+        stroke="#fcfcfd"
+        strokeWidth={3}
+        paintOrder="stroke"
+        style={{ userSelect: "none" }}
+      >
+        {text}
+      </text>
+    </g>
   );
 }
