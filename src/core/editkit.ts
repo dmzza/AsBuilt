@@ -1,4 +1,12 @@
-import type { JunctionStmt, ParamStmt, ParsedLayer, SetStmt } from "./ast";
+import {
+  stmtKey,
+  type AxisStmt,
+  type JunctionStmt,
+  type ParamStmt,
+  type ParsedLayer,
+  type SetStmt,
+  type WallStmt,
+} from "./ast";
 import { perturbParam, resolveAndSolve, type Pipeline } from "./model";
 import { parseLayerFile } from "./parser";
 import { printStmt } from "./printer";
@@ -260,6 +268,156 @@ export function proposeMove(
         ? `locked by measured: ${[...blockers].sort().join(", ")}`
         : `no free parameter or sketch explains this drag`,
   };
+}
+
+/** Smallest unused `<prefix><n>` name across all layers' authored statements. */
+export function genName(project: Project, prefix: string): string {
+  const used = new Set<string>();
+  for (const [, l] of project.layers) {
+    for (const s of l.parsed.stmts) {
+      const key = stmtKey(s);
+      if (key !== null) used.add(key);
+    }
+  }
+  for (let n = 1; ; n++) {
+    const candidate = `${prefix}${n}`;
+    if (!used.has(candidate)) return candidate;
+  }
+}
+
+export type WallEndpoint = { x: S64; y: S64 } | { existing: string };
+
+export interface AddWallProposal {
+  edits: TextEdit[];
+  wall: string;
+  junctions: string[];
+}
+
+/**
+ * Draw a wall: new junctions for free endpoints, reuse for `existing` ones
+ * (shared walls emerge by drawing against existing junctions). An `axis`
+ * constraint is emitted when the UI snapped the wall to an axis.
+ */
+export function proposeAddWall(
+  project: Project,
+  branch: string,
+  args: {
+    a: WallEndpoint;
+    b: WallEndpoint;
+    wallType: string;
+    axis?: "h" | "v";
+  },
+): AddWallProposal {
+  const file = project.layers.get(branch);
+  if (file === undefined) throw new Error(`no layer "${branch}"`);
+  const lines: string[] = [];
+  const created: string[] = [];
+  const junctionNames: string[] = [];
+  let counter = 0;
+
+  for (const end of [args.a, args.b]) {
+    if ("existing" in end) {
+      junctionNames.push(end.existing);
+    } else {
+      // genName scans authored statements only; bump past what we just made
+      let name = genName(project, "j");
+      while (created.includes(name)) {
+        counter += 1;
+        name = `j${parseInt(name.slice(1), 10) + counter}`;
+      }
+      created.push(name);
+      junctionNames.push(name);
+      const j: JunctionStmt = {
+        kind: "junction",
+        name,
+        sketch: { x: end.x, y: end.y },
+        loc: { file: "", line: 0 },
+        leadingComments: [],
+      };
+      lines.push(printStmt(j));
+    }
+  }
+
+  let wallName = genName(project, "w");
+  while (created.includes(wallName)) wallName = `w${parseInt(wallName.slice(1), 10) + 1}`;
+  const wall: WallStmt = {
+    kind: "wall",
+    name: wallName,
+    from: junctionNames[0]!,
+    to: junctionNames[1]!,
+    wallType: args.wallType,
+    loc: { file: "", line: 0 },
+    leadingComments: [],
+  };
+  lines.push(printStmt(wall));
+
+  if (args.axis !== undefined) {
+    const axis: AxisStmt = {
+      kind: "axis",
+      name: `${wallName}.axis`,
+      wall: wallName,
+      orient: args.axis,
+      loc: { file: "", line: 0 },
+      leadingComments: [],
+    };
+    lines.push(printStmt(axis));
+  }
+
+  return {
+    edits: [{ kind: "append", file: file.file, lines }],
+    wall: wallName,
+    junctions: junctionNames,
+  };
+}
+
+/**
+ * Delete an element. Own authored lines are blanked; inherited or
+ * template-expanded statements get tombstones. Deleting a wall also removes
+ * its companion `.length`/`.axis` statements so no dangling refs remain.
+ */
+export function proposeDelete(project: Project, branch: string, key: string): TextEdit[] {
+  const pipeline = resolveAndSolve(layerMap(project), branch);
+  const targets = [key, `${key}.length`, `${key}.axis`].filter((k) =>
+    pipeline.resolved.effective.has(k),
+  );
+  if (targets.length === 0) throw new Error(`nothing to delete at "${key}"`);
+  const edits: TextEdit[] = [];
+  const tombstones: string[] = [];
+  for (const t of targets) {
+    const eff = pipeline.resolved.effective.get(t)!;
+    if (eff.expandedFrom === undefined && eff.layer === branch) {
+      edits.push({
+        kind: "replace-line",
+        file: project.layers.get(branch)!.file,
+        line: eff.stmt.loc.line,
+        newText: "",
+      });
+    } else {
+      tombstones.push(`delete ${t}`);
+    }
+  }
+  if (tombstones.length > 0) {
+    edits.push({
+      kind: "append",
+      file: project.layers.get(branch)!.file,
+      lines: tombstones,
+    });
+  }
+  return edits;
+}
+
+/** Create a new concept layer file branching from `parent`. */
+export function createConcept(project: Project, name: string, parent: string): Project {
+  if (!/^[a-z_][a-z0-9_]*$/.test(name)) {
+    throw new Error(`bad concept name "${name}" (lowercase identifier)`);
+  }
+  if (project.layers.has(name)) throw new Error(`layer "${name}" already exists`);
+  if (!project.layers.has(parent)) throw new Error(`unknown parent "${parent}"`);
+  const file = `concepts/${name}.abl`;
+  if (project.files.has(file)) throw new Error(`file "${file}" already exists`);
+  const files = Object.fromEntries(project.files);
+  files[file] = `layer ${name} : ${parent}\n`;
+  return loadProject(files);
 }
 
 /** Change a param value/provenance as a text edit (measure or re-approximate). */

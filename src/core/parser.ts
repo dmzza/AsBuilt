@@ -154,6 +154,7 @@ const JUNCTION_RE = new RegExp(`^junction\\s+(${NAME})\\s+(~\\(.*\\))$`);
 const WALL_RE = new RegExp(`^wall\\s+(${NAME})\\s*(\\{.*\\})$`);
 const ROOM_RE = new RegExp(`^room\\s+(${NAME})\\s*:\\s*rect\\((.*)\\)\\s*(\\{.*\\})?$`);
 const RECTILINEAR_RE = new RegExp(`^rectilinear\\s+(${NAME})\\.\\*$`);
+const AXIS_RE = new RegExp(`^axis\\s+(${NAME})\\s+(h|v)$`);
 const LENGTH_RE = new RegExp(`^length\\(\\s*(${NAME})\\s*\\)\\s*=\\s*(.+)$`);
 const MEAS_RE = new RegExp(
   `^meas\\s+(${NAME})\\s*:\\s*dist\\(\\s*(${NAME})\\s*,\\s*(${NAME})\\s*\\)\\s*=\\s*(${LEN}?)(\\[[^\\]]*\\])?$`,
@@ -261,6 +262,17 @@ function parseStmtLine(line: Line, pendingComments: string[]): Stmt {
 
   if ((m = RECTILINEAR_RE.exec(body))) {
     return { kind: "rectilinear", ns: m[1]!, loc, leadingComments };
+  }
+
+  if ((m = AXIS_RE.exec(body))) {
+    return {
+      kind: "axis",
+      name: `${m[1]!}.axis`,
+      wall: m[1]!,
+      orient: m[2] as "h" | "v",
+      loc,
+      leadingComments,
+    };
   }
 
   if ((m = LENGTH_RE.exec(body))) {
