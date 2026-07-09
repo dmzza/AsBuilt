@@ -116,24 +116,44 @@ export function resolveAndSolve(
   return { resolved, solution, anchors, diagnostics: resolved.diagnostics };
 }
 
-/** Re-solve with one param's target shifted (inches), warm-started. */
-export function perturbParam(
+/**
+ * Re-solve with one target statement's value shifted (inches), warm-started.
+ * Works for params, set overrides, and meas statements.
+ */
+export function perturbTarget(
   pipeline: Pipeline,
-  param: string,
+  key: string,
   deltaInches: number,
-  extra: Omit<BuildOptions, "anchors" | "paramTargetOverride"> = {},
+  extra: Omit<BuildOptions, "anchors" | "targetOverride"> = {},
 ): Solution {
-  const eff = pipeline.resolved.effective.get(param);
-  if (eff === undefined || (eff.stmt.kind !== "param" && eff.stmt.kind !== "set")) {
-    throw new Error(`perturbParam: no param "${param}"`);
+  const eff = pipeline.resolved.effective.get(key);
+  const s = eff?.stmt;
+  if (s === undefined || (s.kind !== "param" && s.kind !== "set" && s.kind !== "meas")) {
+    throw new Error(`perturbTarget: no param or meas "${key}"`);
   }
-  const base = s64ToInches(eff.stmt.value);
+  const base = s64ToInches(s.value);
   const system = buildSystem(pipeline.resolved, {
     ...extra,
     anchors: pipeline.anchors,
-    paramTargetOverride: new Map([[param, base + deltaInches]]),
+    targetOverride: new Map([[key, base + deltaInches]]),
   });
   return solve(system, pipeline.solution.x);
+}
+
+/** Back-compat alias for param-only callers. */
+export const perturbParam = perturbTarget;
+
+/** Target statements that carry provenance: params/sets and meas (measured). */
+function supportTargets(pipeline: Pipeline): { key: string; grade: Grade }[] {
+  const out: { key: string; grade: Grade }[] = [];
+  for (const [key, eff] of pipeline.resolved.effective) {
+    if (eff.stmt.kind === "param" || eff.stmt.kind === "set") {
+      out.push({ key, grade: eff.stmt.prov });
+    } else if (eff.stmt.kind === "meas") {
+      out.push({ key, grade: "measured" });
+    }
+  }
+  return out;
 }
 
 export function wallView(pipeline: Pipeline, name: string): WallView | null {
@@ -193,12 +213,11 @@ export function derivedGrade(
   const base = valueOf(pipeline.solution);
   const support: string[] = [];
   const grades: Grade[] = [];
-  for (const [key, eff] of pipeline.resolved.effective) {
-    if (eff.stmt.kind !== "param" && eff.stmt.kind !== "set") continue;
-    const perturbed = perturbParam(pipeline, key, 1);
+  for (const t of supportTargets(pipeline)) {
+    const perturbed = perturbTarget(pipeline, t.key, 1);
     if (Math.abs(valueOf(perturbed) - base) > SENSITIVITY_TOL) {
-      support.push(key);
-      grades.push(eff.stmt.prov);
+      support.push(t.key);
+      grades.push(t.grade);
     }
   }
   return { grade: weakest(grades), support: support.sort() };
@@ -243,14 +262,13 @@ export function allWallGrades(
   const support = new Map<string, string[]>(walls.map((w) => [w.key, []]));
   const grades = new Map<string, Grade[]>(walls.map((w) => [w.key, []]));
 
-  for (const [pkey, eff] of pipeline.resolved.effective) {
-    if (eff.stmt.kind !== "param" && eff.stmt.kind !== "set") continue;
-    const perturbed = perturbParam(pipeline, pkey, 1);
+  for (const t of supportTargets(pipeline)) {
+    const perturbed = perturbTarget(pipeline, t.key, 1);
     for (const w of walls) {
       const delta = Math.abs(lengthIn(perturbed, w) - base.get(w.key)!);
       if (delta > SENSITIVITY_TOL) {
-        support.get(w.key)!.push(pkey);
-        grades.get(w.key)!.push(eff.stmt.prov);
+        support.get(w.key)!.push(t.key);
+        grades.get(w.key)!.push(t.grade);
       }
     }
   }

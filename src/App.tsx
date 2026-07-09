@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState, type JSX } from "react";
+import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 import {
   allParams,
   formatLength,
-  parseLength,
+  proposeDelete,
   wallView,
   allWallGrades,
   type Grade,
@@ -57,6 +57,13 @@ function Toolbar(): JSX.Element {
         </button>
         <button className={tool === "wall" ? "active" : ""} onClick={() => setTool("wall")}>
           Wall
+        </button>
+        <button
+          className={tool === "measure" ? "active" : ""}
+          onClick={() => setTool("measure")}
+          title="Record a tape measurement: click a wall, or two junctions (diagonals welcome)"
+        >
+          Measure
         </button>
         <select value={wallType} onChange={(e) => setWallType(e.target.value)}>
           {wallTypes.map((t) => (
@@ -127,22 +134,10 @@ function GradeChip({ grade }: { grade: Grade }): JSX.Element {
 
 function ParamsPanel(): JSX.Element | null {
   const pipeline = useApp((s) => s.pipeline);
-  const setParam = useApp((s) => s.setParam);
+  const openEditor = useApp((s) => s.openEditor);
   if (pipeline === null) return null;
   const params = allParams(pipeline);
   const audit = params.filter((p) => p.prov === "approximated");
-
-  const edit = (name: string, prov: "measured" | "approximated" | "designed"): void => {
-    const raw = window.prompt(
-      prov === "measured" ? `Measured value for ${name}:` : `New value for ${name}:`,
-    );
-    if (raw === null || raw.trim() === "") return;
-    try {
-      setParam(name, parseLength(raw), prov);
-    } catch (e) {
-      useApp.getState().showToast((e as Error).message, "error");
-    }
-  };
 
   return (
     <div className="panel">
@@ -167,11 +162,31 @@ function ParamsPanel(): JSX.Element | null {
                 <GradeChip grade={p.prov} />
               </td>
               <td className="param-actions">
-                <button title="Edit value" onClick={() => edit(p.name, p.prov)}>
+                <button
+                  title="Edit value"
+                  onClick={(e) =>
+                    openEditor({
+                      target: { kind: "param", name: p.name, prov: p.prov },
+                      anchor: { x: e.clientX, y: e.clientY },
+                      initial: formatLength(Math.round(p.authoredInches * 64)),
+                      label: `${p.name} (${p.prov})`,
+                    })
+                  }
+                >
                   ✎
                 </button>
                 {p.prov !== "measured" && (
-                  <button title="Record a measurement" onClick={() => edit(p.name, "measured")}>
+                  <button
+                    title="Record a measurement"
+                    onClick={(e) =>
+                      openEditor({
+                        target: { kind: "param-measure", name: p.name },
+                        anchor: { x: e.clientX, y: e.clientY },
+                        initial: "",
+                        label: `Measured ${p.name}`,
+                      })
+                    }
+                  >
                     📏
                   </button>
                 )}
@@ -182,6 +197,151 @@ function ParamsPanel(): JSX.Element | null {
       </table>
     </div>
   );
+}
+
+function ValueEditor(): JSX.Element | null {
+  const editor = useApp((s) => s.editor);
+  const commitEditor = useApp((s) => s.commitEditor);
+  const closeEditor = useApp((s) => s.closeEditor);
+  const [text, setText] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (editor !== null) {
+      setText(editor.initial);
+      setError(null);
+      // focus after mount
+      setTimeout(() => {
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      }, 0);
+    }
+  }, [editor]);
+
+  if (editor === null) return null;
+  const left = Math.min(editor.anchor.x, window.innerWidth - 240);
+  const top = Math.min(editor.anchor.y + 8, window.innerHeight - 90);
+
+  return (
+    <div className="value-editor" style={{ left, top }}>
+      <div className="value-editor-label">{editor.label}</div>
+      <input
+        ref={inputRef}
+        value={text}
+        placeholder={`e.g. 11'-8 1/2"`}
+        onChange={(e) => {
+          setText(e.target.value);
+          setError(null);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            const err = commitEditor(text);
+            if (err !== null) setError(err);
+          } else if (e.key === "Escape") {
+            closeEditor();
+          }
+          e.stopPropagation();
+        }}
+      />
+      {error !== null && <div className="value-editor-error">{error}</div>}
+      <div className="value-editor-hint">Enter to apply · Esc to cancel</div>
+    </div>
+  );
+}
+
+/** One suspect row inside a contradiction card, with its resolution actions. */
+function SuspectRow({ suspect }: { suspect: string }): JSX.Element | null {
+  const pipeline = useApp((s) => s.pipeline);
+  const project = useApp((s) => s.project);
+  const runEdits = useApp((s) => s.runEdits);
+  const setParam = useApp((s) => s.setParam);
+  const openEditor = useApp((s) => s.openEditor);
+  const branch = useApp((s) => s.branch);
+  if (pipeline === null || project === null) return null;
+  const eff = pipeline.resolved.effective.get(suspect);
+  if (eff === undefined) return null;
+  const s = eff.stmt;
+
+  const doDelete = (): void => {
+    runEdits(proposeDelete(project, branch, suspect));
+  };
+
+  if (s.kind === "meas") {
+    return (
+      <div className="suspect-row">
+        <span className="suspect-name">
+          {suspect} = {formatLength(s.value)} <em>(measured{s.date !== undefined ? ` ${s.date}` : ""})</em>
+        </span>
+        <span className="suspect-actions">
+          <button
+            onClick={(e) =>
+              openEditor({
+                target: { kind: "meas-edit", name: suspect },
+                anchor: { x: e.clientX, y: e.clientY },
+                initial: formatLength(s.value),
+                label: `Correct ${suspect}`,
+              })
+            }
+          >
+            ✎
+          </button>
+          <button onClick={doDelete}>Remove</button>
+        </span>
+      </div>
+    );
+  }
+
+  if ((s.kind === "param" || s.kind === "set") && s.prov === "measured") {
+    return (
+      <div className="suspect-row">
+        <span className="suspect-name">
+          {suspect} = {formatLength(s.value)} <em>(measured)</em>
+        </span>
+        <span className="suspect-actions">
+          <button
+            onClick={(e) =>
+              openEditor({
+                target: { kind: "param", name: suspect, prov: "measured" },
+                anchor: { x: e.clientX, y: e.clientY },
+                initial: formatLength(s.value),
+                label: `Correct ${suspect}`,
+              })
+            }
+          >
+            ✎
+          </button>
+          <button
+            title="Keep the value but stop treating it as gospel"
+            onClick={() => setParam(suspect, s.value, "approximated")}
+          >
+            → approx
+          </button>
+        </span>
+      </div>
+    );
+  }
+
+  if (s.kind === "length" || s.kind === "axis") {
+    const what = s.kind === "length" ? "equal-walls default" : "square-corner default";
+    return (
+      <div className="suspect-row">
+        <span className="suspect-name">
+          {suspect} <em>({what})</em>
+        </span>
+        <span className="suspect-actions">
+          <button
+            title="Remove this default so the geometry can go out of square"
+            onClick={doDelete}
+          >
+            Relax
+          </button>
+        </span>
+      </div>
+    );
+  }
+
+  return null;
 }
 
 function DiagnosticsPanel(): JSX.Element | null {
@@ -204,9 +364,12 @@ function DiagnosticsPanel(): JSX.Element | null {
       <h3>Problems</h3>
       {contradictions.map((c, i) => (
         <div key={`c${i}`} className="diag diag-error">
-          <strong>Measurements disagree</strong> (off by{" "}
-          {formatLength(Math.round(Math.max(...c.violated.map((v) => v.residualInches)) * 64))}
-          ). Suspects: {c.suspects.join(", ")}
+          <strong>Measurements disagree</strong> — off by{" "}
+          {formatLength(Math.round(Math.max(...c.violated.map((v) => v.residualInches)) * 64))}.
+          Pick what gives:
+          {c.suspects.map((s) => (
+            <SuspectRow key={s} suspect={s} />
+          ))}
         </div>
       ))}
       {diags.map((d, i) => (
@@ -283,9 +446,25 @@ function SelectionPanel(): JSX.Element | null {
 
 export default function App(): JSX.Element {
   const boot = useApp((s) => s.boot);
+  const undo = useApp((s) => s.undo);
+  const redo = useApp((s) => s.redo);
+
   useEffect(() => {
     boot();
   }, [boot]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "z") return;
+      const target = e.target as HTMLElement;
+      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
+      e.preventDefault();
+      if (e.shiftKey) redo();
+      else undo();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo, redo]);
 
   return (
     <div className="app">
@@ -298,12 +477,14 @@ export default function App(): JSX.Element {
           <ParamsPanel />
           <div className="panel hint-panel">
             <p className="hint">
-              <b>Select</b>: click walls/junctions, drag junctions, ⌫ deletes. <b>Wall</b>: click
-              to chain walls, Esc ends. Scroll pans, pinch/⌘-scroll zooms.
+              <b>Select</b>: click/drag, ⌫ deletes, ⌘Z undoes. <b>Wall</b>: click to chain, Esc
+              ends. <b>Measure</b>: click a wall, or two junctions for a diagonal, then type the
+              tape reading. Scroll pans, pinch/⌘-scroll zooms.
             </p>
           </div>
         </div>
       </div>
+      <ValueEditor />
       <Toast />
     </div>
   );

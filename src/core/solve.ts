@@ -56,8 +56,11 @@ export interface BuildOptions {
   anchors?: Set<string>;
   /** Override a junction's sketch target, e.g. during drag probing. */
   sketchOverride?: Map<string, { x: number; y: number }>;
-  /** Override a param's target value (inches), e.g. during sensitivity probing. */
-  paramTargetOverride?: Map<string, number>;
+  /**
+   * Override a target value in inches, keyed by statement key. Applies to
+   * param targets and meas values — used for sensitivity probing.
+   */
+  targetOverride?: Map<string, number>;
 }
 
 export function buildSystem(resolved: Resolved, opts: BuildOptions = {}): System {
@@ -100,7 +103,7 @@ export function buildSystem(resolved: Resolved, opts: BuildOptions = {}): System
         fn: (x) => x[yi]! - ty,
       });
     } else if (s.kind === "param" || s.kind === "set") {
-      const target = opts.paramTargetOverride?.get(key) ?? s64ToInches(s.value);
+      const target = opts.targetOverride?.get(key) ?? s64ToInches(s.value);
       const pi = addVar(`p:${key}`, target);
       paramProv.set(key, s.prov);
       const w = s.prov === "measured" ? W_MEASURED_PARAM : W_SOFT_PARAM;
@@ -176,7 +179,7 @@ export function buildSystem(resolved: Resolved, opts: BuildOptions = {}): System
       const bxi = jVar(s.b, "x");
       const byi = jVar(s.b, "y");
       if (axi === null || ayi === null || bxi === null || byi === null) continue;
-      const target = s64ToInches(s.value);
+      const target = opts.targetOverride?.get(key) ?? s64ToInches(s.value);
       residuals.push({
         key,
         hard: true,
