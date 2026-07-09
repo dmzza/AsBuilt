@@ -157,63 +157,60 @@ export function proposeMove(
     (s) => s.prov !== "measured" && Math.hypot(s.sx, s.sy) > SENS_TOL,
   );
 
-  if (free.length > 0) {
-    // Best single param by explained fraction of the drag vector.
-    let best: { s: Sens; dp: number; explained: number } | null = null;
-    for (const s of free) {
+  // Candidate params, best explained fraction first; verification decides.
+  const candidates = free
+    .map((s) => {
       const ss = s.sx * s.sx + s.sy * s.sy;
       const dp = (s.sx * delta.x + s.sy * delta.y) / ss;
       const rx = delta.x - dp * s.sx;
       const ry = delta.y - dp * s.sy;
-      const explained = 1 - Math.hypot(rx, ry) / deltaMag;
-      if (best === null || explained > best.explained) best = { s, dp, explained };
+      return { s, dp, explained: 1 - Math.hypot(rx, ry) / deltaMag };
+    })
+    .filter((c) => c.explained > 0.3 && Math.abs(c.dp) > 1 / 128)
+    .sort((a, b) => b.explained - a.explained);
+
+  for (const cand of candidates) {
+    const eff = pipeline.resolved.effective.get(cand.s.param)!;
+    const stmt = eff.stmt as ParamStmt | SetStmt;
+    const newValue = stmt.value + s64FromInches(cand.dp);
+    const owner = project.layers.get(eff.layer);
+    if (owner === undefined) continue;
+    let edits: TextEdit[];
+    if (eff.layer === branch) {
+      const updated = { ...stmt, value: newValue };
+      edits = [
+        {
+          kind: "replace-line",
+          file: owner.file,
+          line: stmt.loc.line,
+          newText: printStmt(updated),
+        },
+      ];
+    } else {
+      // Override in the current branch. In a concept, a drag expresses
+      // design intent; in the as-built root a drag refines a sketch guess.
+      const isRoot = project.layers.get(branch)!.parsed.header.parent === null;
+      const setStmt: SetStmt = {
+        kind: "set",
+        name: cand.s.param,
+        value: newValue,
+        prov: isRoot ? stmt.prov : "designed",
+        was: stmt.value,
+        loc: { file: "", line: 0 },
+        leadingComments: [],
+      };
+      edits = [
+        {
+          kind: "append",
+          file: project.layers.get(branch)!.file,
+          lines: [printStmt(setStmt)],
+        },
+      ];
     }
-    if (best !== null && best.explained > 0.3 && Math.abs(best.dp) > 1 / 128) {
-      const eff = pipeline.resolved.effective.get(best.s.param)!;
-      const stmt = eff.stmt as ParamStmt | SetStmt;
-      const newValue = stmt.value + s64FromInches(best.dp);
-      const owner = project.layers.get(eff.layer);
-      if (owner === undefined) {
-        return {
-          kind: "refusal",
-          blockers: [best.s.param],
-          message: `param ${best.s.param} owned by unknown layer`,
-        };
-      }
-      let edits: TextEdit[];
-      if (eff.layer === branch) {
-        const updated = { ...stmt, value: newValue };
-        edits = [
-          {
-            kind: "replace-line",
-            file: owner.file,
-            line: stmt.loc.line,
-            newText: printStmt(updated),
-          },
-        ];
-      } else {
-        // Override in the current branch. In a concept, a drag expresses
-        // design intent; in the as-built root a drag refines a sketch guess.
-        const isRoot = project.layers.get(branch)!.parsed.header.parent === null;
-        const setStmt: SetStmt = {
-          kind: "set",
-          name: best.s.param,
-          value: newValue,
-          prov: isRoot ? stmt.prov : "designed",
-          was: stmt.value,
-          loc: { file: "", line: 0 },
-          leadingComments: [],
-        };
-        edits = [
-          {
-            kind: "append",
-            file: project.layers.get(branch)!.file,
-            lines: [printStmt(setStmt)],
-          },
-        ];
-      }
-      const verified = verifyMove(project, edits, branch, junction, targetIn);
-      return { kind: "param-edit", param: best.s.param, newValue, edits, verified };
+    // An edit that doesn't land the junction where the user dropped it is
+    // not the user's intent: reject and try the next strategy.
+    if (verifyMove(project, edits, branch, junction, targetIn)) {
+      return { kind: "param-edit", param: cand.s.param, newValue, edits, verified: true };
     }
   }
 
@@ -230,7 +227,7 @@ export function proposeMove(
     const updated: JunctionStmt = { ...stmt, sketch: { x: target.x, y: target.y } };
     const owner = project.layers.get(eff.layer)!;
     const edits: TextEdit[] =
-      eff.layer === branch
+      eff.layer === branch && eff.expandedFrom === undefined
         ? [
             {
               kind: "replace-line",
@@ -246,8 +243,9 @@ export function proposeMove(
               lines: [printStmt(updated)],
             },
           ];
-    const verified = verifyMove(project, edits, branch, junction, targetIn);
-    return { kind: "sketch-edit", junction, edits, verified };
+    if (verifyMove(project, edits, branch, junction, targetIn)) {
+      return { kind: "sketch-edit", junction, edits, verified: true };
+    }
   }
 
   // Locked. Cite what binds it.

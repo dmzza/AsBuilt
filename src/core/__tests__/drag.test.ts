@@ -124,6 +124,62 @@ describe("(d) drag rules produce deterministic text edits", () => {
     expect(proposal.kind).toBe("refusal");
   });
 
+  test("authored loop (no template): measured-bound corner drag refuses and changes nothing", () => {
+    // Regression: without a gauge anchor, every param has phantom sensitivity
+    // to every junction and a drag can invert through it (browser-found bug:
+    // dragging dl.ne rewrote dl.south_width 12' -> 19'-6").
+    const L = `layer asbuilt
+
+walltype ext_2x6 { thickness: 6 1/2" }
+
+param dl.depth = 13'-0" [measured]
+param dl.east_depth = 8'-0" [measured]
+param dl.south_width = 12'-0" [approximated]
+param dl.width = 20'-0" [measured]
+
+junction dl.e ~(20'-0", 5'-0")
+junction dl.k ~(12'-0", 5'-0")
+junction dl.ne ~(20'-0", 13'-0")
+junction dl.nw ~(0", 13'-0")
+junction dl.s ~(12'-0", 0")
+junction dl.sw ~(0", 0")
+
+wall dl.east { from: dl.ne, to: dl.e, type: ext_2x6 }
+wall dl.inner { from: dl.k, to: dl.s, type: ext_2x6 }
+wall dl.jog { from: dl.e, to: dl.k, type: ext_2x6 }
+wall dl.north { from: dl.nw, to: dl.ne, type: ext_2x6 }
+wall dl.south { from: dl.s, to: dl.sw, type: ext_2x6 }
+wall dl.west { from: dl.sw, to: dl.nw, type: ext_2x6 }
+
+rectilinear dl.*
+
+length(dl.east) = dl.east_depth
+length(dl.north) = dl.width
+length(dl.south) = dl.south_width
+length(dl.west) = dl.depth
+`;
+    const project = loadProject({ "asbuilt.abl": L });
+    const before = project.files.get("asbuilt.abl");
+    const proposal = proposeMove(project, "asbuilt", "dl.ne", {
+      x: s64FromFeet(18),
+      y: s64FromFeet(13),
+    });
+    expect(proposal.kind).toBe("refusal");
+    expect(project.files.get("asbuilt.abl")).toBe(before);
+    // the south wall's free end is dl.s (dl.sw is pinned by the measured
+    // width through the west wall); dragging it edits south_width, with the
+    // unbound jog absorbing the change
+    const ok = proposeMove(project, "asbuilt", "dl.s", {
+      x: s64FromFeet(12.5),
+      y: 0,
+    });
+    expect(ok.kind).toBe("param-edit");
+    if (ok.kind !== "param-edit") return;
+    expect(ok.param).toBe("dl.south_width");
+    expect(ok.newValue).toBe(parseLength(`12'-6"`));
+    expect(ok.verified).toBe(true);
+  });
+
   test("the full loop: drag in concept, then measure the base, live inheritance holds", () => {
     const project = loadProject({
       "asbuilt.abl": BASE,

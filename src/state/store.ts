@@ -225,7 +225,9 @@ export const useApp = create<AppState>((set, get) => ({
       return;
     }
     if (!proposal.verified) {
-      get().showToast("Move could not be applied cleanly; check diagnostics", "info");
+      // never apply an edit that doesn't do what the drag asked
+      get().showToast("Move has no clean edit; nothing changed", "error");
+      return;
     }
     get().runEdits(proposal.edits);
   },

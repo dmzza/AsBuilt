@@ -296,9 +296,17 @@ export function Plan2D(): JSX.Element {
     }
   };
 
-  const onPointerUp = (): void => {
+  const onPointerUp = (e: ReactPointerEvent<SVGSVGElement>): void => {
     if (drag !== null) {
-      dragJunction(drag.junction, { x: roundInch(drag.wx), y: roundInch(drag.wy) });
+      // Use the release position itself: a fast flick (or synthetic drag) can
+      // reach pointerup without any intermediate pointermove events.
+      const rect = e.currentTarget.getBoundingClientRect();
+      const { wx, wy } = toWorld(e.clientX - rect.left, e.clientY - rect.top);
+      const moved = Math.hypot(wx - drag.wx, wy - drag.wy) > 0.01 ? { wx, wy } : drag;
+      dragJunction(drag.junction, {
+        x: roundInch(moved.wx),
+        y: roundInch(moved.wy),
+      });
       setDrag(null);
     }
     setPan(null);
