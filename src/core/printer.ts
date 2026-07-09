@@ -16,11 +16,13 @@ const KIND_ORDER: Stmt["kind"][] = [
   "set",
   "junction",
   "wall",
+  "opening",
   "room",
   "rectilinear",
   "axis",
   "length",
   "meas",
+  "fixture",
   "space",
   "delete",
 ];
@@ -77,6 +79,20 @@ export function printStmt(s: Stmt): string {
       return `rectilinear ${s.ns}.*`;
     case "axis":
       return `axis ${s.wall} ${s.orient}`;
+    case "opening": {
+      const sill = s.sill !== undefined ? `, sill: ${formatLength(s.sill)}` : "";
+      return (
+        `${s.opKind} ${s.name} { in: ${s.wall}, at: ${printExpr(s.offset)} from ${s.anchor}, ` +
+        `size: ${formatLength(s.width)} x ${formatLength(s.height)}${sill} }`
+      );
+    }
+    case "fixture": {
+      const rot = s.rot !== 0 ? `, rot: ${s.rot}` : "";
+      return (
+        `fixture ${s.name} { kind: ${s.fixKind}, at: ${printPoint(s.at)}, ` +
+        `size: ${formatLength(s.w)} x ${formatLength(s.d)}${rot} }`
+      );
+    }
     case "length":
       return `length(${s.wall}) = ${printExpr(s.expr)}`;
     case "meas": {

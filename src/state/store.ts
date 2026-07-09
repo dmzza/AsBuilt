@@ -5,14 +5,19 @@ import {
   layerMap,
   loadProject,
   parseLength,
+  proposeAddFixture,
+  proposeAddOpening,
   proposeAddWall,
   proposeDelete,
   proposeEditMeas,
   proposeMeasure,
   proposeMove,
+  proposeSetFixture,
+  proposeSetOpeningOffset,
   proposeSetParam,
   resolveAndSolve,
   type Pipeline,
+  type Point,
   type Project,
   type Provenance,
   type S64,
@@ -22,7 +27,9 @@ import {
 import { DEMO_BRANCH, DEMO_FILES } from "../demo";
 import * as persist from "../persist";
 
-export type Tool = "select" | "wall" | "measure";
+export type Tool = "select" | "wall" | "measure" | "door" | "window" | "fixture";
+
+export type ViewMode = "2d" | "3d" | "split";
 
 export type EditorTarget =
   | { kind: "param"; name: string; prov: Provenance }
@@ -59,6 +66,7 @@ interface AppState {
   dirty: Record<string, true>;
   selection: string | null;
   tool: Tool;
+  viewMode: ViewMode;
   wallType: string;
   pendingStart: WallEndpoint | null;
   measurePending: string | null;
@@ -83,6 +91,12 @@ interface AppState {
   newConcept(name: string): void;
   setParam(name: string, value: S64, prov: Provenance): void;
   setMeasurePending(junction: string | null): void;
+  setViewMode(mode: ViewMode): void;
+  placeOpening(wall: string, centerAlongInches: number): void;
+  moveOpening(name: string, offset: S64): void;
+  placeFixture(at: Point): void;
+  moveFixture(name: string, at: Point): void;
+  rotateFixture(name: string): void;
   openEditor(editor: EditorState): void;
   closeEditor(): void;
   /** Parse and apply the editor's entered value. Returns an error message or null. */
@@ -126,6 +140,7 @@ export const useApp = create<AppState>((set, get) => ({
   dirty: {},
   selection: null,
   tool: "select",
+  viewMode: "2d",
   wallType: "int_2x4",
   pendingStart: null,
   measurePending: null,
@@ -376,6 +391,71 @@ export const useApp = create<AppState>((set, get) => ({
 
   setMeasurePending(junction) {
     set({ measurePending: junction });
+  },
+
+  setViewMode(mode) {
+    set({ viewMode: mode });
+  },
+
+  placeOpening(wall, centerAlongInches) {
+    const { project, branch, tool } = get();
+    if (project === null || (tool !== "door" && tool !== "window")) return;
+    try {
+      const { edits, name } = proposeAddOpening(project, branch, {
+        wall,
+        opKind: tool,
+        centerAlong: centerAlongInches,
+      });
+      get().runEdits(edits);
+      set({ selection: name });
+    } catch (e) {
+      get().showToast(`Place failed: ${(e as Error).message}`, "error");
+    }
+  },
+
+  moveOpening(name, offset) {
+    const { project, branch } = get();
+    if (project === null) return;
+    try {
+      get().runEdits(proposeSetOpeningOffset(project, branch, name, offset));
+    } catch (e) {
+      get().showToast(`Move failed: ${(e as Error).message}`, "error");
+    }
+  },
+
+  placeFixture(at) {
+    const { project, branch } = get();
+    if (project === null) return;
+    try {
+      const { edits, name } = proposeAddFixture(project, branch, { at });
+      get().runEdits(edits);
+      set({ selection: name, tool: "select" });
+    } catch (e) {
+      get().showToast(`Place failed: ${(e as Error).message}`, "error");
+    }
+  },
+
+  moveFixture(name, at) {
+    const { project, branch } = get();
+    if (project === null) return;
+    try {
+      get().runEdits(proposeSetFixture(project, branch, name, { at }));
+    } catch (e) {
+      get().showToast(`Move failed: ${(e as Error).message}`, "error");
+    }
+  },
+
+  rotateFixture(name) {
+    const { project, branch, pipeline } = get();
+    if (project === null || pipeline === null) return;
+    const eff = pipeline.resolved.effective.get(name);
+    if (eff?.stmt.kind !== "fixture") return;
+    const next = ((eff.stmt.rot + 90) % 360) as 0 | 90 | 180 | 270;
+    try {
+      get().runEdits(proposeSetFixture(project, branch, name, { rot: next }));
+    } catch (e) {
+      get().showToast(`Rotate failed: ${(e as Error).message}`, "error");
+    }
   },
 
   openEditor(editor) {

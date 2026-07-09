@@ -359,6 +359,23 @@ export function resolve(layers: Map<string, ParsedLayer>, branch: string): Resol
         if (!has(s.a, ["junction"])) badRef(key, s.a, "junction");
         if (!has(s.b, ["junction"])) badRef(key, s.b, "junction");
         break;
+      case "opening": {
+        const wallEff = effective.get(s.wall);
+        if (wallEff?.stmt.kind !== "wall") {
+          badRef(key, s.wall, "wall");
+        } else if (s.anchor !== wallEff.stmt.from && s.anchor !== wallEff.stmt.to) {
+          diagnostics.push({
+            severity: "error",
+            code: "unknown-ref",
+            key,
+            message: `${key}: anchor "${s.anchor}" is not an endpoint of ${s.wall}`,
+          });
+        }
+        for (const ref of exprRefs(s.offset)) {
+          if (!has(ref, ["param", "set"])) badRef(key, ref, "param");
+        }
+        break;
+      }
       case "room":
         for (const ref of [...exprRefs(s.width), ...exprRefs(s.depth)]) {
           if (!has(ref, ["param", "set"])) badRef(key, ref, "param");

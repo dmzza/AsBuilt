@@ -1,5 +1,5 @@
 import type { ParsedLayer, Provenance } from "./ast";
-import { resolve, type Diagnostic, type Resolved } from "./merge";
+import { evalExpr, resolve, type Diagnostic, type Resolved } from "./merge";
 import {
   buildSystem,
   junctionPos,
@@ -198,6 +198,97 @@ export function allParams(pipeline: Pipeline): ParamView[] {
     if (v !== null) out.push(v);
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export interface OpeningView {
+  key: string;
+  opKind: "door" | "window";
+  wall: string;
+  /** Near jamb (closest to anchor) and far jamb, world inches, on the centerline. */
+  jambA: { x: number; y: number };
+  jambB: { x: number; y: number };
+  /** Unit vector along the host wall from its `from` to its `to`. */
+  dir: { x: number; y: number };
+  widthInches: number;
+  heightInches: number;
+  sillInches: number;
+  offsetInches: number;
+  anchor: string;
+  /** True when the opening doesn't fit inside its host wall. */
+  overflow: boolean;
+}
+
+/** Solved world geometry of every opening; overflow flags for diagnostics. */
+export function openingViews(pipeline: Pipeline): OpeningView[] {
+  const params = new Map<string, number>();
+  for (const [key, eff] of pipeline.resolved.effective) {
+    if (eff.stmt.kind === "param" || eff.stmt.kind === "set") {
+      params.set(key, eff.stmt.value);
+    }
+  }
+  const out: OpeningView[] = [];
+  for (const [key, eff] of pipeline.resolved.effective) {
+    const s = eff.stmt;
+    if (s.kind !== "opening") continue;
+    const wallEff = pipeline.resolved.effective.get(s.wall);
+    if (wallEff?.stmt.kind !== "wall") continue;
+    const a = junctionPos(pipeline.solution, wallEff.stmt.from);
+    const b = junctionPos(pipeline.solution, wallEff.stmt.to);
+    if (a === null || b === null) continue;
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len < 0.01) continue;
+    const dir = { x: (b.x - a.x) / len, y: (b.y - a.y) / len };
+    const offS64 = evalExpr(s.offset, params);
+    const off = (offS64 ?? 0) / 64;
+    const w = s.width / 64;
+    // Anchored at `from`: jambs at off and off+w along dir.
+    // Anchored at `to`: measured backwards from the far end.
+    const fromAnchored = s.anchor === wallEff.stmt.from;
+    const start = fromAnchored ? off : len - off - w;
+    out.push({
+      key,
+      opKind: s.opKind,
+      wall: s.wall,
+      jambA: { x: a.x + dir.x * start, y: a.y + dir.y * start },
+      jambB: { x: a.x + dir.x * (start + w), y: a.y + dir.y * (start + w) },
+      dir,
+      widthInches: w,
+      heightInches: s.height / 64,
+      sillInches: (s.sill ?? (s.opKind === "window" ? 30 * 64 : 0)) / 64,
+      offsetInches: off,
+      anchor: s.anchor,
+      overflow: start < -0.01 || start + w > len + 0.01,
+    });
+  }
+  return out;
+}
+
+export interface FixtureView {
+  key: string;
+  fixKind: string;
+  x: number;
+  y: number;
+  w: number;
+  d: number;
+  rot: 0 | 90 | 180 | 270;
+}
+
+export function fixtureViews(pipeline: Pipeline): FixtureView[] {
+  const out: FixtureView[] = [];
+  for (const [key, eff] of pipeline.resolved.effective) {
+    const s = eff.stmt;
+    if (s.kind !== "fixture") continue;
+    out.push({
+      key,
+      fixKind: s.fixKind,
+      x: s.at.x / 64,
+      y: s.at.y / 64,
+      w: s.w / 64,
+      d: s.d / 64,
+      rot: s.rot,
+    });
+  }
+  return out;
 }
 
 const SENSITIVITY_TOL = 0.05; // inches of response to a 1" target shift
