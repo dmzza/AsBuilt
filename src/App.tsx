@@ -15,6 +15,7 @@ import {
   proposeSetParam,
   proposeSetWallType,
   wallView,
+  type Diagnostic,
   type Grade,
   type Provenance,
   type S64,
@@ -812,6 +813,79 @@ function SelectionPanel(): JSX.Element | null {
   }
 }
 
+/** The current sheet itself: parentage (re-parent = rebase) + ghost toggle. */
+function SheetPanel(): JSX.Element | null {
+  const project = useApp((s) => s.project);
+  const branch = useApp((s) => s.branch);
+  const selection = useApp((s) => s.selection);
+  const reparent = useApp((s) => s.reparent);
+  const ghost = useApp((s) => s.ghost);
+  const toggleGhost = useApp((s) => s.toggleGhost);
+  const ghostPipeline = useApp((s) => s.ghostPipeline);
+
+  const layer = project?.layers.get(branch);
+  const parents = useMemo(() => {
+    if (project === undefined || project === null || layer === undefined) return [];
+    // A sheet may hang off anything that doesn't descend from it.
+    const children = new Map<string, string[]>();
+    for (const [name, l] of project.layers) {
+      const p = l.parsed.header.parent;
+      if (p !== null) children.set(p, [...(children.get(p) ?? []), name]);
+    }
+    const below = new Set<string>([branch]);
+    const stack = [branch];
+    for (let cur = stack.pop(); cur !== undefined; cur = stack.pop()) {
+      for (const c of children.get(cur) ?? []) {
+        if (!below.has(c)) {
+          below.add(c);
+          stack.push(c);
+        }
+      }
+    }
+    return [...project.layers.keys()].filter((n) => !below.has(n)).sort();
+  }, [project, layer, branch]);
+
+  if (project === null || layer === undefined || selection !== null) return null;
+  const parent = layer.parsed.header.parent;
+
+  return (
+    <div className="panel">
+      <h3>Sheet</h3>
+      <Prop label="Sheet">
+        <span className="mono">{branch}</span>
+      </Prop>
+      <Prop label="Parent">
+        {parent === null ? (
+          <span className="prop-muted">— as-built root</span>
+        ) : (
+          <select
+            value={parent}
+            title="Re-parent this sheet (rebases it onto the new parent)"
+            onChange={(e) => reparent(e.target.value)}
+          >
+            {parents.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+        )}
+      </Prop>
+      {parent !== null && ghostPipeline !== null && (
+        <Prop label="Ghost">
+          <label className="ghost-toggle" title={`Show “${parent}” dashed under this sheet`}>
+            <input type="checkbox" checked={ghost} onChange={toggleGhost} /> show {parent}{" "}
+            underneath
+          </label>
+        </Prop>
+      )}
+      <Prop label="File">
+        <span className="mono prop-muted">{layer.file}</span>
+      </Prop>
+    </div>
+  );
+}
+
 /* -------------------------------------------------- dimensions & problems */
 
 function ParamsPanel(): JSX.Element | null {
@@ -980,13 +1054,67 @@ function SuspectRow({ suspect }: { suspect: string }): JSX.Element | null {
   return null;
 }
 
+/** A masked correction card: the base changed a value this sheet overrides. */
+function MaskedCard({ diag }: { diag: Diagnostic }): JSX.Element {
+  const pipeline = useApp((s) => s.pipeline);
+  const branch = useApp((s) => s.branch);
+  const resolveMasked = useApp((s) => s.resolveMasked);
+  const name = diag.key!;
+  const { base, override } = diag.data as { base: S64; was: S64; override: S64 };
+  const owner = pipeline?.resolved.effective.get(name)?.layer;
+  return (
+    <div className="diag diag-warning">
+      <strong>Base corrected under your override</strong> — {name} measures{" "}
+      {formatLength(base)} now; this sheet holds {formatLength(override)}.
+      {owner === branch ? (
+        <div className="review-actions">
+          <button
+            title={`Keep ${formatLength(override)} and acknowledge the new base`}
+            onClick={() => resolveMasked(name, "keep")}
+          >
+            Keep {formatLength(override)}
+          </button>
+          <button
+            title="Drop the override; the corrected base shows through"
+            onClick={() => resolveMasked(name, "adopt")}
+          >
+            Adopt {formatLength(base)}
+          </button>
+        </div>
+      ) : (
+        <div className="diag-note">Override lives on “{owner}” — resolve it there.</div>
+      )}
+    </div>
+  );
+}
+
+/** An orphan card: a statement pointing at something that no longer exists. */
+function OrphanCard({ diag }: { diag: Diagnostic }): JSX.Element {
+  const dropOrphan = useApp((s) => s.dropOrphan);
+  return (
+    <div className="diag diag-error">
+      {diag.message}
+      {diag.key !== undefined && (
+        <div className="suspect-row">
+          <span className="suspect-name">{diag.key}</span>
+          <span className="suspect-actions">
+            <button title="Drop this statement from the sheet" onClick={() => dropOrphan(diag.key!)}>
+              Remove
+            </button>
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DiagnosticsPanel(): JSX.Element | null {
   const pipeline = useApp((s) => s.pipeline);
   const pipelineError = useApp((s) => s.pipelineError);
   if (pipelineError !== null) {
     return (
       <div className="panel">
-        <h3>Problems</h3>
+        <h3>Review</h3>
         <div className="diag diag-error">{pipelineError}</div>
       </div>
     );
@@ -997,7 +1125,7 @@ function DiagnosticsPanel(): JSX.Element | null {
   if (diags.length === 0 && contradictions.length === 0) return null;
   return (
     <div className="panel">
-      <h3>Problems</h3>
+      <h3>Review</h3>
       {contradictions.map((c, i) => (
         <div key={`c${i}`} className="diag diag-error">
           <strong>Measurements disagree</strong> — off by{" "}
@@ -1008,11 +1136,19 @@ function DiagnosticsPanel(): JSX.Element | null {
           ))}
         </div>
       ))}
-      {diags.map((d, i) => (
-        <div key={i} className={`diag diag-${d.severity}`}>
-          {d.message}
-        </div>
-      ))}
+      {diags.map((d, i) => {
+        if (d.code === "masked-correction" && d.key !== undefined) {
+          return <MaskedCard key={`${d.code}:${d.key}`} diag={d} />;
+        }
+        if (d.code === "unknown-ref" || d.code === "set-missing-base") {
+          return <OrphanCard key={`${d.code}:${d.key ?? i}`} diag={d} />;
+        }
+        return (
+          <div key={i} className={`diag diag-${d.severity}`}>
+            {d.message}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1121,6 +1257,7 @@ export default function App(): JSX.Element {
         </div>
         <div className="sidebar">
           <SelectionPanel />
+          <SheetPanel />
           <DiagnosticsPanel />
           <ParamsPanel />
           <div className="panel hint-panel">

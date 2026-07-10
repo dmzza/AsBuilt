@@ -67,6 +67,8 @@ function roundInch(v: number): S64 {
 
 export function Plan2D(): JSX.Element {
   const pipeline = useApp((s) => s.pipeline);
+  const ghostPipeline = useApp((s) => s.ghostPipeline);
+  const ghostOn = useApp((s) => s.ghost);
   const tool = useApp((s) => s.tool);
   const selection = useApp((s) => s.selection);
   const pendingStart = useApp((s) => s.pendingStart);
@@ -182,6 +184,31 @@ export function Plan2D(): JSX.Element {
         : { x: 0, y: 0 };
     return { walls, junctions, spaces, measures, centroid };
   }, [pipeline]);
+
+  // the parent branch's walls, for the ghost overlay
+  const parentWalls = useMemo(() => {
+    if (!ghostOn || ghostPipeline === null) return [];
+    const thickness = new Map<string, number>();
+    for (const [key, eff] of ghostPipeline.resolved.effective) {
+      if (eff.stmt.kind === "walltype") thickness.set(key, eff.stmt.thickness / 64);
+    }
+    const walls: {
+      key: string;
+      a: { x: number; y: number };
+      b: { x: number; y: number };
+      th: number;
+    }[] = [];
+    for (const [key, eff] of ghostPipeline.resolved.effective) {
+      const s = eff.stmt;
+      if (s.kind !== "wall") continue;
+      const a = junctionPos(ghostPipeline.solution, s.from);
+      const b = junctionPos(ghostPipeline.solution, s.to);
+      if (a !== null && b !== null) {
+        walls.push({ key, a, b, th: thickness.get(s.wallType) ?? 4.5 });
+      }
+    }
+    return walls;
+  }, [ghostOn, ghostPipeline]);
 
   const grades = useMemo(
     () => (pipeline === null ? new Map<string, { grade: Grade }>() : allWallGrades(pipeline)),
@@ -595,6 +622,35 @@ export function Plan2D(): JSX.Element {
             strokeWidth={1}
           />
         ))}
+
+        {/* parent ghost: where the walls stand on the sheet underneath */}
+        {parentWalls.map((w) => {
+          const a = toScreen(w.a.x, w.a.y);
+          const b = toScreen(w.b.x, w.b.y);
+          return (
+            <g key={`ghost:${w.key}`} pointerEvents="none">
+              <line
+                x1={a.x}
+                y1={a.y}
+                x2={b.x}
+                y2={b.y}
+                stroke={SHEET.hardware}
+                strokeOpacity={0.18}
+                strokeWidth={Math.max(w.th * view.ppi, 2)}
+              />
+              <line
+                x1={a.x}
+                y1={a.y}
+                x2={b.x}
+                y2={b.y}
+                stroke={SHEET.hardware}
+                strokeOpacity={0.7}
+                strokeWidth={1}
+                strokeDasharray="6 4"
+              />
+            </g>
+          );
+        })}
 
         {/* walls */}
         {geometry.walls.map((w) => {

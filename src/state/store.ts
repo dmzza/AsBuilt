@@ -9,9 +9,12 @@ import {
   proposeAddOpening,
   proposeAddWall,
   proposeDelete,
+  proposeDropOrphan,
   proposeEditMeas,
   proposeMeasure,
   proposeMove,
+  proposeReparent,
+  proposeResolveMasked,
   proposeSetFixture,
   proposeSetOpeningOffset,
   proposeSetParam,
@@ -62,6 +65,9 @@ interface AppState {
   branch: string;
   pipeline: Pipeline | null;
   pipelineError: string | null;
+  /** Parent branch's solved model, for the ghost overlay (null on the root). */
+  ghostPipeline: Pipeline | null;
+  ghost: boolean;
   dirHandle: FileSystemDirectoryHandle | null;
   dirty: Record<string, true>;
   selection: string | null;
@@ -80,6 +86,10 @@ interface AppState {
   openFolder(): Promise<void>;
   saveAll(): Promise<void>;
   setBranch(branch: string): void;
+  reparent(newParent: string): void;
+  toggleGhost(): void;
+  resolveMasked(name: string, action: "keep" | "adopt"): void;
+  dropOrphan(key: string): void;
   setTool(tool: Tool): void;
   setWallType(wallType: string): void;
   select(key: string | null): void;
@@ -109,16 +119,29 @@ interface AppState {
 function compute(project: Project, branch: string): {
   pipeline: Pipeline | null;
   pipelineError: string | null;
+  ghostPipeline: Pipeline | null;
 } {
   try {
     if (!project.layers.has(branch)) {
       const first = [...project.layers.keys()][0];
-      if (first === undefined) return { pipeline: null, pipelineError: "no layers" };
+      if (first === undefined) {
+        return { pipeline: null, pipelineError: "no layers", ghostPipeline: null };
+      }
       branch = first;
     }
-    return { pipeline: resolveAndSolve(layerMap(project), branch), pipelineError: null };
+    const pipeline = resolveAndSolve(layerMap(project), branch);
+    const parent = project.layers.get(branch)!.parsed.header.parent;
+    let ghostPipeline: Pipeline | null = null;
+    if (parent !== null && project.layers.has(parent)) {
+      try {
+        ghostPipeline = resolveAndSolve(layerMap(project), parent);
+      } catch {
+        ghostPipeline = null; // parent may not solve; ghost is best-effort
+      }
+    }
+    return { pipeline, pipelineError: null, ghostPipeline };
   } catch (e) {
-    return { pipeline: null, pipelineError: (e as Error).message };
+    return { pipeline: null, pipelineError: (e as Error).message, ghostPipeline: null };
   }
 }
 
@@ -136,6 +159,8 @@ export const useApp = create<AppState>((set, get) => ({
   branch: "asbuilt",
   pipeline: null,
   pipelineError: null,
+  ghostPipeline: null,
+  ghost: true,
   dirHandle: null,
   dirty: {},
   selection: null,
@@ -250,6 +275,42 @@ export const useApp = create<AppState>((set, get) => ({
     if (project === null) return;
     set({ branch, selection: null, pendingStart: null, ...compute(project, branch) });
     persist.autosave(project.files, branch);
+  },
+
+  reparent(newParent) {
+    const { project, branch } = get();
+    if (project === null) return;
+    try {
+      get().runEdits(proposeReparent(project, branch, newParent));
+    } catch (e) {
+      get().showToast(`Re-parent failed: ${(e as Error).message}`, "error");
+    }
+  },
+
+  toggleGhost() {
+    set({ ghost: !get().ghost });
+  },
+
+  resolveMasked(name, action) {
+    const { project, branch } = get();
+    if (project === null) return;
+    try {
+      get().runEdits(proposeResolveMasked(project, branch, name, action));
+    } catch (e) {
+      get().showToast(`Resolve failed: ${(e as Error).message}`, "error");
+    }
+  },
+
+  dropOrphan(key) {
+    const { project, branch, selection } = get();
+    if (project === null) return;
+    try {
+      const edits = proposeDropOrphan(project, branch, key);
+      if (selection === key) set({ selection: null });
+      get().runEdits(edits);
+    } catch (e) {
+      get().showToast(`Remove failed: ${(e as Error).message}`, "error");
+    }
   },
 
   setTool(tool) {
