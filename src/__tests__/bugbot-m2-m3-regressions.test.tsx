@@ -96,7 +96,7 @@ describe("Bugbot M2–M3 regressions", () => {
 
     await act(async () => {
       useApp.getState().openEditor({
-        target: { kind: "measure-wall", wall: "k.north" },
+        target: { kind: "measure-wall", wall: "k.north", face: "inner" },
         anchor: { x: 10, y: 10 },
         initial: "",
         label: "Measured k.north",

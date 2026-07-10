@@ -80,6 +80,14 @@ export function applyEdits(project: Project, edits: TextEdit[]): Project {
   return loadProject(Object.fromEntries(files));
 }
 
+export type MoveOpts = {
+  /**
+   * Hold Alt/⌥: allow rewriting measured params (and re-taping meases) so the
+   * drag can break hard constraints. Conflicting hard values surface in Review.
+   */
+  forceBreak?: boolean;
+};
+
 export type MoveProposal =
   | {
       kind: "param-edit";
@@ -87,9 +95,30 @@ export type MoveProposal =
       newValue: S64;
       edits: TextEdit[];
       verified: boolean;
+      /** Measured keys rewritten under forceBreak (for toast / review hint). */
+      broke?: string[];
     }
-  | { kind: "sketch-edit"; junction: string; edits: TextEdit[]; verified: boolean }
-  | { kind: "room-move"; room: string; edits: TextEdit[]; verified: boolean }
+  | {
+      kind: "sketch-edit";
+      junction: string;
+      edits: TextEdit[];
+      verified: boolean;
+      broke?: string[];
+    }
+  | {
+      kind: "room-move";
+      room: string;
+      edits: TextEdit[];
+      verified: boolean;
+      broke?: string[];
+    }
+  | {
+      kind: "wall-move";
+      wall: string;
+      edits: TextEdit[];
+      verified: boolean;
+      broke?: string[];
+    }
   | { kind: "refusal"; blockers: string[]; message: string };
 
 const SENS_TOL = 0.05; // inches response to 1" param shift
@@ -121,6 +150,34 @@ function sensitivities(pipeline: Pipeline, junction: string): Sens[] {
   return out;
 }
 
+/** Sensitivity of a wall's midpoint to each param (for wall drags). */
+function wallMidSensitivities(
+  pipeline: Pipeline,
+  from: string,
+  to: string,
+): Sens[] {
+  const a0 = junctionPos(pipeline.solution, from);
+  const b0 = junctionPos(pipeline.solution, to);
+  if (a0 === null || b0 === null) return [];
+  const mid0 = { x: (a0.x + b0.x) / 2, y: (a0.y + b0.y) / 2 };
+  const out: Sens[] = [];
+  for (const [key, eff] of pipeline.resolved.effective) {
+    if (eff.stmt.kind !== "param" && eff.stmt.kind !== "set") continue;
+    const sol = perturbParam(pipeline, key, 1);
+    const a1 = junctionPos(sol, from);
+    const b1 = junctionPos(sol, to);
+    if (a1 === null || b1 === null) continue;
+    const mid1 = { x: (a1.x + b1.x) / 2, y: (a1.y + b1.y) / 2 };
+    out.push({
+      param: key,
+      prov: eff.stmt.prov,
+      sx: mid1.x - mid0.x,
+      sy: mid1.y - mid0.y,
+    });
+  }
+  return out;
+}
+
 function verifyMove(
   project: Project,
   edits: TextEdit[],
@@ -139,16 +196,357 @@ function verifyMove(
   }
 }
 
+function verifyWallMove(
+  project: Project,
+  edits: TextEdit[],
+  branch: string,
+  from: string,
+  to: string,
+  targetMid: { x: number; y: number },
+  /** Also require endpoints to move by approximately the same delta. */
+  delta: { x: number; y: number },
+): boolean {
+  try {
+    const next = applyEdits(project, edits);
+    const p = resolveAndSolve(layerMap(next), branch);
+    const a = junctionPos(p.solution, from);
+    const b = junctionPos(p.solution, to);
+    if (a === null || b === null) return false;
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    if (Math.hypot(mid.x - targetMid.x, mid.y - targetMid.y) > VERIFY_TOL) return false;
+    // Length should be roughly preserved for a pure translate.
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function paramEditFor(
+  project: Project,
+  branch: string,
+  pipeline: Pipeline,
+  param: string,
+  newValue: S64,
+  forceBreak: boolean,
+): TextEdit[] | null {
+  const eff = pipeline.resolved.effective.get(param);
+  if (eff === undefined || (eff.stmt.kind !== "param" && eff.stmt.kind !== "set")) {
+    return null;
+  }
+  const stmt = eff.stmt;
+  const owner = project.layers.get(eff.layer);
+  if (owner === undefined) return null;
+  if (eff.layer === branch) {
+    // Force-break re-tapes a measured param: keep [measured], refresh date optional.
+    const updated =
+      forceBreak && stmt.prov === "measured"
+        ? {
+            ...stmt,
+            value: newValue,
+            date: new Date().toISOString().slice(0, 10),
+          }
+        : { ...stmt, value: newValue };
+    return [
+      {
+        kind: "replace-line",
+        file: owner.file,
+        line: stmt.loc.line,
+        newText: printStmt(updated),
+      },
+    ];
+  }
+  const isRoot = project.layers.get(branch)!.parsed.header.parent === null;
+  const setStmt: SetStmt = {
+    kind: "set",
+    name: param,
+    value: newValue,
+    prov: forceBreak && stmt.prov === "measured"
+      ? "measured"
+      : isRoot
+        ? stmt.prov
+        : "designed",
+    was: stmt.value,
+    date:
+      forceBreak && stmt.prov === "measured"
+        ? new Date().toISOString().slice(0, 10)
+        : undefined,
+    loc: { file: "", line: 0 },
+    leadingComments: [],
+  };
+  return [
+    {
+      kind: "append",
+      file: project.layers.get(branch)!.file,
+      lines: [printStmt(setStmt)],
+    },
+  ];
+}
+
+/** Single-param projection score: how much of `delta` lies along sensitivity `s`. */
+function paramExplain(
+  s: Sens,
+  delta: { x: number; y: number },
+  deltaMag: number,
+): { dp: number; explained: number } {
+  const ss = s.sx * s.sx + s.sy * s.sy;
+  if (ss < SENS_TOL * SENS_TOL) return { dp: 0, explained: 0 };
+  const dp = (s.sx * delta.x + s.sy * delta.y) / ss;
+  const rx = delta.x - dp * s.sx;
+  const ry = delta.y - dp * s.sy;
+  return { dp, explained: 1 - Math.hypot(rx, ry) / deltaMag };
+}
+
+/**
+ * Greedy multi-param fit: peel residual onto the best remaining param until the
+ * drag is explained (or we run out of useful knobs). Then refine with a true
+ * least-squares on the selected set so nearly-orthogonal dims (width+depth)
+ * share the delta correctly.
+ */
+function multiParamDps(
+  pool: Sens[],
+  delta: { x: number; y: number },
+  maxParams = 3,
+): { s: Sens; dp: number }[] {
+  let rx = delta.x;
+  let ry = delta.y;
+  const used = new Set<string>();
+  const picked: Sens[] = [];
+
+  for (let k = 0; k < maxParams; k++) {
+    const rMag = Math.hypot(rx, ry);
+    if (rMag < 1 / 64) break;
+    let best: { s: Sens; explained: number } | null = null;
+    for (const s of pool) {
+      if (used.has(s.param)) continue;
+      const { explained } = paramExplain(s, { x: rx, y: ry }, rMag);
+      if (explained < 0.15) continue;
+      if (best === null || explained > best.explained) best = { s, explained };
+    }
+    if (best === null) break;
+    used.add(best.s.param);
+    picked.push(best.s);
+    // provisional residual peel (refined by LS below)
+    const { dp } = paramExplain(best.s, { x: rx, y: ry }, rMag);
+    rx -= dp * best.s.sx;
+    ry -= dp * best.s.sy;
+  }
+  if (picked.length === 0) return [];
+
+  // Least squares: min ||Σ dp_i s_i − delta||²  via normal equations (n≤3).
+  const n = picked.length;
+  const sts = new Float64Array(n * n);
+  const std = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const si = picked[i]!;
+    std[i] = si.sx * delta.x + si.sy * delta.y;
+    for (let j = 0; j < n; j++) {
+      const sj = picked[j]!;
+      sts[i * n + j] = si.sx * sj.sx + si.sy * sj.sy;
+    }
+  }
+  const dps = solveSmallSymmetric(sts, std, n);
+  if (dps === null) {
+    // fall back to greedy peels only
+    const greedy: { s: Sens; dp: number }[] = [];
+    rx = delta.x;
+    ry = delta.y;
+    for (const s of picked) {
+      const rMag = Math.hypot(rx, ry);
+      if (rMag < 1 / 64) break;
+      const { dp } = paramExplain(s, { x: rx, y: ry }, rMag);
+      if (Math.abs(dp) < 1 / 128) continue;
+      greedy.push({ s, dp });
+      rx -= dp * s.sx;
+      ry -= dp * s.sy;
+    }
+    return greedy;
+  }
+  return picked
+    .map((s, i) => ({ s, dp: dps[i]! }))
+    .filter((c) => Math.abs(c.dp) > 1 / 128);
+}
+
+/** Dense symmetric solve for n×n with n ≤ 4 (Cholesky-ish via Gauss). */
+function solveSmallSymmetric(
+  A: Float64Array,
+  b: Float64Array,
+  n: number,
+): Float64Array | null {
+  const M = Float64Array.from(A);
+  const y = Float64Array.from(b);
+  for (let col = 0; col < n; col++) {
+    let pivot = col;
+    let best = Math.abs(M[col * n + col]!);
+    for (let r = col + 1; r < n; r++) {
+      const v = Math.abs(M[r * n + col]!);
+      if (v > best) {
+        best = v;
+        pivot = r;
+      }
+    }
+    if (best < 1e-14) return null;
+    if (pivot !== col) {
+      for (let c = 0; c < n; c++) {
+        const t = M[col * n + c]!;
+        M[col * n + c] = M[pivot * n + c]!;
+        M[pivot * n + c] = t;
+      }
+      const tb = y[col]!;
+      y[col] = y[pivot]!;
+      y[pivot] = tb;
+    }
+    const d = M[col * n + col]!;
+    for (let r = col + 1; r < n; r++) {
+      const f = M[r * n + col]! / d;
+      M[r * n + col] = 0;
+      for (let c = col + 1; c < n; c++) {
+        M[r * n + c] = M[r * n + c]! - f * M[col * n + c]!;
+      }
+      y[r] = y[r]! - f * y[col]!;
+    }
+  }
+  const x = new Float64Array(n);
+  for (let r = n - 1; r >= 0; r--) {
+    let acc = y[r]!;
+    for (let c = r + 1; c < n; c++) acc -= M[r * n + c]! * x[c]!;
+    x[r] = acc / M[r * n + r]!;
+  }
+  return x;
+}
+
+function buildParamEdits(
+  project: Project,
+  branch: string,
+  pipeline: Pipeline,
+  changes: { s: Sens; dp: number }[],
+  forceBreak: boolean,
+): { edits: TextEdit[]; primary: string; primaryValue: S64; broke: string[] } | null {
+  const edits: TextEdit[] = [];
+  const broke: string[] = [];
+  let primary = "";
+  let primaryValue = 0;
+  for (const { s, dp } of changes) {
+    const eff = pipeline.resolved.effective.get(s.param);
+    if (eff === undefined || (eff.stmt.kind !== "param" && eff.stmt.kind !== "set")) {
+      continue;
+    }
+    const stmt = eff.stmt;
+    const newValue = stmt.value + s64FromInches(dp);
+    const breaking = forceBreak && stmt.prov === "measured";
+    const e = paramEditFor(project, branch, pipeline, s.param, newValue, breaking);
+    if (e === null) continue;
+    edits.push(...e);
+    if (primary === "") {
+      primary = s.param;
+      primaryValue = newValue;
+    }
+    if (breaking) broke.push(s.param);
+  }
+  if (edits.length === 0 || primary === "") return null;
+  return { edits, primary, primaryValue, broke };
+}
+
+/**
+ * Prefer a single param when it fully explains the drag; otherwise fit several
+ * params at once (e.g. width+depth for a northeast corner drag).
+ */
+function tryParamCandidates(
+  project: Project,
+  branch: string,
+  pipeline: Pipeline,
+  sens: Sens[],
+  delta: { x: number; y: number },
+  deltaMag: number,
+  forceBreak: boolean,
+  verify: (edits: TextEdit[]) => boolean,
+): Extract<MoveProposal, { kind: "param-edit" }> | null {
+  const pool = forceBreak
+    ? sens.filter((s) => Math.hypot(s.sx, s.sy) > SENS_TOL)
+    : sens.filter((s) => s.prov !== "measured" && Math.hypot(s.sx, s.sy) > SENS_TOL);
+  if (pool.length === 0) return null;
+
+  const singles = pool
+    .map((s) => {
+      const { dp, explained } = paramExplain(s, delta, deltaMag);
+      return { s, dp, explained };
+    })
+    .filter((c) => c.explained > 0.3 && Math.abs(c.dp) > 1 / 128)
+    .sort((a, b) => b.explained - a.explained);
+
+  // 1) Any single param that verifies — prefer best explained first.
+  //    (Do this before multi: under hard meases, FD sensitivities couple
+  //    params and multi-LS can overfit a pure-axis drag.)
+  for (const cand of singles) {
+    const built = buildParamEdits(
+      project,
+      branch,
+      pipeline,
+      [{ s: cand.s, dp: cand.dp }],
+      forceBreak,
+    );
+    if (built === null) continue;
+    if (verify(built.edits)) {
+      return {
+        kind: "param-edit",
+        param: built.primary,
+        newValue: built.primaryValue,
+        edits: built.edits,
+        verified: true,
+        broke: built.broke.length > 0 ? built.broke : undefined,
+      };
+    }
+  }
+
+  // 2) Multi-param least squares when no single knob lands the handle.
+  const multi = multiParamDps(pool, delta, 3);
+  if (multi.length >= 2) {
+    // Require the multi fit to actually explain most of the drag in linear
+    // approx — reject noisy coupled-sensitivity explosions.
+    let fx = 0;
+    let fy = 0;
+    for (const { s, dp } of multi) {
+      fx += dp * s.sx;
+      fy += dp * s.sy;
+    }
+    const multiExplained = 1 - Math.hypot(delta.x - fx, delta.y - fy) / deltaMag;
+    if (multiExplained >= 0.75) {
+      const built = buildParamEdits(project, branch, pipeline, multi, forceBreak);
+      if (built !== null && verify(built.edits)) {
+        return {
+          kind: "param-edit",
+          param: multi.map((c) => c.s.param).join("+"),
+          newValue: built.primaryValue,
+          edits: built.edits,
+          verified: true,
+          broke: built.broke.length > 0 ? built.broke : undefined,
+        };
+      }
+      // Do not force-commit multi without verify: coupled hard constraints
+      // make FD sensitivities non-orthogonal and multi-LS can invent noise.
+    }
+  }
+
+  // Force-break without a verifying single/multi falls through to topology
+  // re-tape in proposeMove (pin junction + axis-aware length re-tapes).
+  return null;
+}
+
 /**
  * Propose the text edit implied by dragging `junction` to `target` (s64 coords)
  * while `branch` is checked out.
+ *
+ * Pass `{ forceBreak: true }` (Alt/⌥ drag) to allow rewriting measured params —
+ * like re-taping a dimension by drag. Other hard constraints that then disagree
+ * surface in the Review panel.
  */
 export function proposeMove(
   project: Project,
   branch: string,
   junction: string,
   target: { x: S64; y: S64 },
+  opts: MoveOpts = {},
 ): MoveProposal {
+  const forceBreak = opts.forceBreak === true;
   const layers = layerMap(project);
   const pipeline = resolveAndSolve(layers, branch);
   const cur = junctionPos(pipeline.solution, junction);
@@ -167,62 +565,20 @@ export function proposeMove(
     (s) => s.prov !== "measured" && Math.hypot(s.sx, s.sy) > SENS_TOL,
   );
 
-  // Candidate params, best explained fraction first; verification decides.
-  const candidates = free
-    .map((s) => {
-      const ss = s.sx * s.sx + s.sy * s.sy;
-      const dp = (s.sx * delta.x + s.sy * delta.y) / ss;
-      const rx = delta.x - dp * s.sx;
-      const ry = delta.y - dp * s.sy;
-      return { s, dp, explained: 1 - Math.hypot(rx, ry) / deltaMag };
-    })
-    .filter((c) => c.explained > 0.3 && Math.abs(c.dp) > 1 / 128)
-    .sort((a, b) => b.explained - a.explained);
-
-  for (const cand of candidates) {
-    const eff = pipeline.resolved.effective.get(cand.s.param)!;
-    const stmt = eff.stmt as ParamStmt | SetStmt;
-    const newValue = stmt.value + s64FromInches(cand.dp);
-    const owner = project.layers.get(eff.layer);
-    if (owner === undefined) continue;
-    let edits: TextEdit[];
-    if (eff.layer === branch) {
-      const updated = { ...stmt, value: newValue };
-      edits = [
-        {
-          kind: "replace-line",
-          file: owner.file,
-          line: stmt.loc.line,
-          newText: printStmt(updated),
-        },
-      ];
-    } else {
-      // Override in the current branch. In a concept, a drag expresses
-      // design intent; in the as-built root a drag refines a sketch guess.
-      const isRoot = project.layers.get(branch)!.parsed.header.parent === null;
-      const setStmt: SetStmt = {
-        kind: "set",
-        name: cand.s.param,
-        value: newValue,
-        prov: isRoot ? stmt.prov : "designed",
-        was: stmt.value,
-        loc: { file: "", line: 0 },
-        leadingComments: [],
-      };
-      edits = [
-        {
-          kind: "append",
-          file: project.layers.get(branch)!.file,
-          lines: [printStmt(setStmt)],
-        },
-      ];
-    }
-    // An edit that doesn't land the junction where the user dropped it is
-    // not the user's intent: reject and try the next strategy.
-    if (verifyMove(project, edits, branch, junction, targetIn)) {
-      return { kind: "param-edit", param: cand.s.param, newValue, edits, verified: true };
-    }
-  }
+  // Soft params first; with forceBreak, measured params are candidates too
+  // (before room-translate, so ⌥-drag means "re-tape this dimension" not
+  // "slide the whole room").
+  const paramHit = tryParamCandidates(
+    project,
+    branch,
+    pipeline,
+    sens,
+    delta,
+    deltaMag,
+    forceBreak,
+    (edits) => verifyMove(project, edits, branch, junction, targetIn),
+  );
+  if (paramHit !== null) return paramHit;
 
   // Translating a rect room: dragging its at:-corner (sw) moves the room by
   // rewriting `at:`. Any corner works when the room's dimensions offer no
@@ -233,9 +589,11 @@ export function proposeMove(
   if (jEff?.expandedFrom !== undefined) {
     const roomKey = jEff.expandedFrom;
     const roomEff = pipeline.resolved.effective.get(roomKey);
+    // Under forceBreak, non-sw corners must not fall through to room
+    // translate — ⌥ means "break the dimension", not "slide the room".
     if (
       roomEff?.stmt.kind === "room" &&
-      (junction === `${roomKey}.sw` || free.length === 0)
+      (junction === `${roomKey}.sw` || (free.length === 0 && !forceBreak))
     ) {
       const rs = roomEff.stmt;
       const updated: RoomRectStmt = {
@@ -279,30 +637,28 @@ export function proposeMove(
   const probeSol = solve(probe, pipeline.solution.x);
   const probePos = junctionPos(probeSol, junction)!;
   if (Math.hypot(probePos.x - targetIn.x, probePos.y - targetIn.y) <= VERIFY_TOL) {
-    const eff = pipeline.resolved.effective.get(junction)!;
-    const stmt = eff.stmt as JunctionStmt;
-    const updated: JunctionStmt = { ...stmt, sketch: { x: target.x, y: target.y } };
-    const owner = project.layers.get(eff.layer)!;
-    const edits: TextEdit[] =
-      eff.layer === branch && eff.expandedFrom === undefined
-        ? [
-            {
-              kind: "replace-line",
-              file: owner.file,
-              line: stmt.loc.line,
-              newText: printStmt(updated),
-            },
-          ]
-        : [
-            {
-              kind: "append",
-              file: project.layers.get(branch)!.file,
-              lines: [printStmt(updated)],
-            },
-          ];
-    if (verifyMove(project, edits, branch, junction, targetIn)) {
-      return { kind: "sketch-edit", junction, edits, verified: true };
+    const sketchEdits = junctionSketchEdits(project, branch, pipeline, junction, target);
+    if (
+      sketchEdits.length > 0 &&
+      verifyMove(project, sketchEdits, branch, junction, targetIn)
+    ) {
+      return { kind: "sketch-edit", junction, edits: sketchEdits, verified: true };
     }
+  }
+
+  // Force-break: ignore FD sensitivity (unreliable under hard locks). Drive
+  // geometry from topology — pin the junction and re-tape every incident wall
+  // length binding + meas so the drop position is the new hard intent.
+  if (forceBreak) {
+    const forced = forceBreakPinJunction(
+      project,
+      branch,
+      pipeline,
+      junction,
+      target,
+      targetIn,
+    );
+    if (forced !== null) return forced;
   }
 
   // Locked. Cite what binds it.
@@ -324,13 +680,335 @@ export function proposeMove(
     jEff?.expandedFrom !== undefined
       ? ` (drag ${jEff.expandedFrom}.sw to move the room)`
       : "";
+  const altHint = !forceBreak
+    ? " — hold ⌥/Alt or ⌘ while dragging to break hard constraints"
+    : "";
   return {
     kind: "refusal",
     blockers: [...blockers].sort(),
     message:
       blockers.size > 0
-        ? `locked by ${[...blockers].sort().join(", ")}`
-        : `no free parameter or sketch explains this drag${roomHint}`,
+        ? `locked by ${[...blockers].sort().join(", ")}${altHint}`
+        : `no free parameter or sketch explains this drag${roomHint}${altHint}`,
+  };
+}
+
+/** Text edits that put a junction's sketch at `target` (s64). */
+function junctionSketchEdits(
+  project: Project,
+  branch: string,
+  pipeline: Pipeline,
+  junction: string,
+  target: { x: S64; y: S64 },
+): TextEdit[] {
+  const eff = pipeline.resolved.effective.get(junction);
+  if (eff?.stmt.kind !== "junction") return [];
+  const updated: JunctionStmt = {
+    ...eff.stmt,
+    sketch: { x: target.x, y: target.y },
+  };
+  if (eff.layer === branch && eff.expandedFrom === undefined) {
+    return [
+      {
+        kind: "replace-line",
+        file: project.layers.get(branch)!.file,
+        line: eff.stmt.loc.line,
+        newText: printStmt(updated),
+      },
+    ];
+  }
+  return [
+    {
+      kind: "append",
+      file: project.layers.get(branch)!.file,
+      lines: [printStmt(updated)],
+    },
+  ];
+}
+
+/**
+ * Force a junction to `targetIn` by pinning its sketch and re-taping every
+ * incident length-bound param and meas to the distances implied by that pin
+ * (other ends held at their current solved positions). Does not depend on
+ * FD sensitivity, so it works when the model is fully measured / locked.
+ */
+function forceBreakPinJunction(
+  project: Project,
+  branch: string,
+  pipeline: Pipeline,
+  junction: string,
+  target: { x: S64; y: S64 },
+  targetIn: { x: number; y: number },
+): MoveProposal | null {
+  const edits: TextEdit[] = [...junctionSketchEdits(project, branch, pipeline, junction, target)];
+  const broke: string[] = [];
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Incident walls: re-tape length bindings. Prefer axis-aligned span
+  // (|Δx| or |Δy|) so dragging a rect corner re-tapes width/depth to the
+  // drop coords — not the hypotenuse to a still-old opposite end.
+  const paramTargets = new Map<string, S64>();
+  for (const [, eff] of pipeline.resolved.effective) {
+    if (eff.stmt.kind !== "wall") continue;
+    if (eff.stmt.from !== junction && eff.stmt.to !== junction) continue;
+    const other = eff.stmt.from === junction ? eff.stmt.to : eff.stmt.from;
+    const otherPos = junctionPos(pipeline.solution, other);
+    if (otherPos === null) continue;
+    const axis = pipeline.resolved.effective.get(`${eff.stmt.name}.axis`);
+    let newLen: number;
+    if (axis?.stmt.kind === "axis" && axis.stmt.orient === "h") {
+      newLen = Math.abs(targetIn.x - otherPos.x);
+    } else if (axis?.stmt.kind === "axis" && axis.stmt.orient === "v") {
+      newLen = Math.abs(targetIn.y - otherPos.y);
+    } else {
+      newLen = Math.hypot(targetIn.x - otherPos.x, targetIn.y - otherPos.y);
+    }
+    if (newLen < 1 / 64) continue;
+    const bind = pipeline.resolved.effective.get(`${eff.stmt.name}.length`);
+    if (bind?.stmt.kind !== "length") continue;
+    const terms = bind.stmt.expr.terms;
+    const first = terms[0];
+    if (terms.length !== 1 || first === undefined || first.kind !== "ref" || first.sign !== 1) {
+      continue;
+    }
+    paramTargets.set(first.name, s64FromInches(newLen));
+  }
+  for (const [param, value] of paramTargets) {
+    const pe = paramEditFor(project, branch, pipeline, param, value, true);
+    if (pe === null) continue;
+    edits.push(...pe);
+    broke.push(param);
+  }
+
+  // Incident meases: re-tape to new distance.
+  for (const [key, eff] of pipeline.resolved.effective) {
+    if (eff.stmt.kind !== "meas") continue;
+    if (eff.stmt.a !== junction && eff.stmt.b !== junction) continue;
+    const other = eff.stmt.a === junction ? eff.stmt.b : eff.stmt.a;
+    const otherPos = junctionPos(pipeline.solution, other);
+    if (otherPos === null) continue;
+    const newDist = Math.hypot(targetIn.x - otherPos.x, targetIn.y - otherPos.y);
+    const updated: MeasStmt = {
+      ...eff.stmt,
+      value: s64FromInches(newDist),
+      date: today,
+    };
+    broke.push(key);
+    if (eff.layer === branch && eff.expandedFrom === undefined) {
+      edits.push({
+        kind: "replace-line",
+        file: project.layers.get(branch)!.file,
+        line: eff.stmt.loc.line,
+        newText: printStmt(updated),
+      });
+    } else {
+      edits.push({
+        kind: "append",
+        file: project.layers.get(branch)!.file,
+        lines: [printStmt(updated)],
+      });
+    }
+  }
+
+  if (edits.length === 0) return null;
+
+  // Always commit: pin + re-tapes encode the user's intent; residual hard
+  // conflicts (axis, stacks, other meases) surface in Review.
+  return {
+    kind: "sketch-edit",
+    junction,
+    edits,
+    verified: true,
+    broke: [...new Set(broke)],
+  };
+}
+
+/**
+ * Translate a wall by `delta` (inches): both endpoints move together.
+ * Same forceBreak semantics as proposeMove (Alt/⌥).
+ */
+export function proposeMoveWall(
+  project: Project,
+  branch: string,
+  wallName: string,
+  deltaInches: { x: number; y: number },
+  opts: MoveOpts = {},
+): MoveProposal {
+  const forceBreak = opts.forceBreak === true;
+  const pipeline = resolveAndSolve(layerMap(project), branch);
+  const wallEff = pipeline.resolved.effective.get(wallName);
+  if (wallEff?.stmt.kind !== "wall") {
+    return { kind: "refusal", blockers: [], message: `unknown wall "${wallName}"` };
+  }
+  const { from, to } = wallEff.stmt;
+  const a0 = junctionPos(pipeline.solution, from);
+  const b0 = junctionPos(pipeline.solution, to);
+  if (a0 === null || b0 === null) {
+    return { kind: "refusal", blockers: [], message: `wall "${wallName}" unresolved` };
+  }
+  const deltaMag = Math.hypot(deltaInches.x, deltaInches.y);
+  if (deltaMag < 1 / 64) {
+    return { kind: "wall-move", wall: wallName, edits: [], verified: true };
+  }
+  const mid0 = { x: (a0.x + b0.x) / 2, y: (a0.y + b0.y) / 2 };
+  const midT = { x: mid0.x + deltaInches.x, y: mid0.y + deltaInches.y };
+
+  const sens = wallMidSensitivities(pipeline, from, to);
+  const paramHit = tryParamCandidates(
+    project,
+    branch,
+    pipeline,
+    sens,
+    deltaInches,
+    deltaMag,
+    forceBreak,
+    (edits) =>
+      verifyWallMove(project, edits, branch, from, to, midT, deltaInches),
+  );
+  if (paramHit !== null) {
+    return {
+      kind: "wall-move",
+      wall: wallName,
+      edits: paramHit.edits,
+      verified: true,
+      broke: paramHit.kind === "param-edit" ? paramHit.broke : undefined,
+    };
+  }
+
+  // Room translate: both ends from the same rect room.
+  const aEff = pipeline.resolved.effective.get(from);
+  const bEff = pipeline.resolved.effective.get(to);
+  if (
+    aEff?.expandedFrom !== undefined &&
+    aEff.expandedFrom === bEff?.expandedFrom
+  ) {
+    const roomKey = aEff.expandedFrom;
+    const roomEff = pipeline.resolved.effective.get(roomKey);
+    if (roomEff?.stmt.kind === "room") {
+      const rs = roomEff.stmt;
+      const updated: RoomRectStmt = {
+        ...rs,
+        at: {
+          x: (rs.at?.x ?? 0) + s64FromInches(deltaInches.x),
+          y: (rs.at?.y ?? 0) + s64FromInches(deltaInches.y),
+        },
+      };
+      const owner = project.layers.get(roomEff.layer);
+      if (owner !== undefined) {
+        const edits: TextEdit[] =
+          roomEff.layer === branch
+            ? [
+                {
+                  kind: "replace-line",
+                  file: owner.file,
+                  line: rs.loc.line,
+                  newText: printStmt(updated),
+                },
+              ]
+            : [
+                {
+                  kind: "append",
+                  file: project.layers.get(branch)!.file,
+                  lines: [printStmt(updated)],
+                },
+              ];
+        if (verifyWallMove(project, edits, branch, from, to, midT, deltaInches)) {
+          return { kind: "wall-move", wall: wallName, edits, verified: true };
+        }
+      }
+    }
+  }
+
+  // Sketch-translate both endpoints (and forceBreak rewrites as needed).
+  const aTarget = {
+    x: s64FromInches(a0.x + deltaInches.x),
+    y: s64FromInches(a0.y + deltaInches.y),
+  };
+  const bTarget = {
+    x: s64FromInches(b0.x + deltaInches.x),
+    y: s64FromInches(b0.y + deltaInches.y),
+  };
+  // Move the free end first; for rigid walls the second follows via params.
+  // Compose: try A with force, then B relative on the resulting project.
+  const moveA = proposeMove(project, branch, from, aTarget, opts);
+  if (moveA.kind !== "refusal" && moveA.edits.length >= 0 && moveA.verified) {
+    let proj = moveA.edits.length > 0 ? applyEdits(project, moveA.edits) : project;
+    const moveB = proposeMove(proj, branch, to, bTarget, opts);
+    if (moveB.kind !== "refusal" && moveB.verified) {
+      const edits = [...moveA.edits, ...moveB.edits];
+      if (verifyWallMove(project, edits, branch, from, to, midT, deltaInches)) {
+        const broke = [
+          ...(moveA.broke ?? []),
+          ...(moveB.broke ?? []),
+        ];
+        return {
+          kind: "wall-move",
+          wall: wallName,
+          edits,
+          verified: true,
+          broke: broke.length > 0 ? [...new Set(broke)] : undefined,
+        };
+      }
+    }
+  }
+
+  // Fall back: single-end move along the delta if the wall is axis-bound
+  // (dragging a north wall north often only needs the free north junctions).
+  const moveOne = proposeMove(project, branch, from, aTarget, opts);
+  if (moveOne.kind !== "refusal" && moveOne.verified) {
+    if (
+      verifyWallMove(project, moveOne.edits, branch, from, to, midT, deltaInches)
+    ) {
+      return {
+        kind: "wall-move",
+        wall: wallName,
+        edits: moveOne.edits,
+        verified: true,
+        broke: moveOne.broke,
+      };
+    }
+  }
+
+  // Force-break: pin both endpoints to translated positions via topology re-tape.
+  if (forceBreak) {
+    const moveA = proposeMove(project, branch, from, aTarget, { forceBreak: true });
+    if (moveA.kind !== "refusal" && moveA.edits.length > 0) {
+      const mid = applyEdits(project, moveA.edits);
+      const moveB = proposeMove(mid, branch, to, bTarget, { forceBreak: true });
+      const edits = [
+        ...moveA.edits,
+        ...(moveB.kind !== "refusal" ? moveB.edits : []),
+      ];
+      const broke = [
+        ...(moveA.broke ?? []),
+        ...(moveB.kind !== "refusal" ? (moveB.broke ?? []) : []),
+      ];
+      if (edits.length > 0) {
+        return {
+          kind: "wall-move",
+          wall: wallName,
+          edits,
+          verified: true,
+          broke: broke.length > 0 ? [...new Set(broke)] : undefined,
+        };
+      }
+    }
+  }
+
+  const blockers = new Set<string>();
+  for (const s of sens) {
+    if (s.prov === "measured" && Math.hypot(s.sx, s.sy) > SENS_TOL) blockers.add(s.param);
+  }
+  const altHint = !forceBreak
+    ? " — hold ⌥/Alt or ⌘ while dragging to break hard constraints"
+    : "";
+  return {
+    kind: "refusal",
+    blockers: [...blockers].sort(),
+    message:
+      blockers.size > 0
+        ? `wall locked by ${[...blockers].sort().join(", ")}${altHint}`
+        : `no free parameter explains this wall drag${altHint}`,
   };
 }
 
