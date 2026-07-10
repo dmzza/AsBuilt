@@ -376,6 +376,87 @@ export function allWallGrades(
   return out;
 }
 
+/* --------------------------------------------------------------- preview */
+
+export interface PreviewDiff {
+  /** Walls in the preview that are new or whose solved endpoints moved. */
+  walls: string[];
+  /** Openings that are new or whose jambs moved (along an unmoved wall too). */
+  openings: string[];
+  /** Fixtures that are new or moved/resized/rotated. */
+  fixtures: string[];
+  /** Keys present now (wall/opening/fixture/meas) that the preview removes. */
+  removed: string[];
+}
+
+const PREVIEW_TOL = 1 / 32; // inches
+
+/**
+ * Geometric diff between the live model and a hypothetical one (the current
+ * files plus a proposed edit, solved on the side). Drives hover previews:
+ * moved geometry ghosts at its new position, removed geometry gets marked.
+ */
+export function previewDiff(current: Pipeline, next: Pipeline): PreviewDiff {
+  const walls: string[] = [];
+  const fixtures: string[] = [];
+  const moved = (a: { x: number; y: number }, b: { x: number; y: number }): boolean =>
+    Math.hypot(a.x - b.x, a.y - b.y) > PREVIEW_TOL;
+
+  for (const [key, eff] of next.resolved.effective) {
+    const s = eff.stmt;
+    if (s.kind === "wall") {
+      const na = junctionPos(next.solution, s.from);
+      const nb = junctionPos(next.solution, s.to);
+      if (na === null || nb === null) continue;
+      const cur = current.resolved.effective.get(key);
+      if (cur?.stmt.kind !== "wall") {
+        walls.push(key);
+        continue;
+      }
+      const ca = junctionPos(current.solution, cur.stmt.from);
+      const cb = junctionPos(current.solution, cur.stmt.to);
+      if (ca === null || cb === null || moved(na, ca) || moved(nb, cb)) walls.push(key);
+    } else if (s.kind === "fixture") {
+      const cur = current.resolved.effective.get(key);
+      if (
+        cur?.stmt.kind !== "fixture" ||
+        moved(
+          { x: s.at.x / 64, y: s.at.y / 64 },
+          { x: cur.stmt.at.x / 64, y: cur.stmt.at.y / 64 },
+        ) ||
+        cur.stmt.w !== s.w ||
+        cur.stmt.d !== s.d ||
+        cur.stmt.rot !== s.rot
+      ) {
+        fixtures.push(key);
+      }
+    }
+  }
+
+  const curOpenings = new Map(openingViews(current).map((o) => [o.key, o]));
+  const openings: string[] = [];
+  for (const o of openingViews(next)) {
+    const cur = curOpenings.get(o.key);
+    if (cur === undefined || moved(o.jambA, cur.jambA) || moved(o.jambB, cur.jambB)) {
+      openings.push(o.key);
+    }
+  }
+
+  const removed: string[] = [];
+  for (const [key, eff] of current.resolved.effective) {
+    const k = eff.stmt.kind;
+    if (k !== "wall" && k !== "opening" && k !== "fixture" && k !== "meas") continue;
+    if (!next.resolved.effective.has(key)) removed.push(key);
+  }
+
+  return {
+    walls: walls.sort(),
+    openings: openings.sort(),
+    fixtures: fixtures.sort(),
+    removed: removed.sort(),
+  };
+}
+
 /* ---------------------------------------------------------------- levels */
 
 export interface LevelView {
