@@ -146,6 +146,64 @@ describe("app smoke (jsdom)", () => {
     expect(useApp.getState().pipeline!.solution.contradictions.length).toBeGreaterThan(0);
   });
 
+  test("M4: masked-correction card, review actions, sheet panel re-parent", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    // correct the base under the concept's override
+    await act(async () => {
+      useApp.getState().setParam("k.width", 140.5 * 64, "measured"); // 11'-8 1/2"
+    });
+
+    // on the concept: review card with both resolutions
+    await act(async () => {
+      useApp.getState().setBranch("galley");
+    });
+    expect(container.textContent).toContain("Base corrected under your override");
+    expect(container.textContent).toContain(`Keep 9'-6"`);
+    expect(container.textContent).toContain(`Adopt 11'-8 1/2"`);
+    // parent ghost is on: dashed parent walls render under the concept
+    expect(container.querySelectorAll('line[stroke-dasharray="6 4"]').length).toBeGreaterThan(0);
+
+    // keep the design: flag clears, (was ...) updated in the concept file
+    await act(async () => {
+      useApp.getState().resolveMasked("k.width", "keep");
+    });
+    expect(container.textContent).not.toContain("Base corrected under your override");
+    expect(useApp.getState().project!.files.get("concepts/galley.abl")!).toContain(
+      `(was 11'-8 1/2")`,
+    );
+
+    // sheet panel on the root: no parent select, just the root note
+    await act(async () => {
+      useApp.getState().setBranch("asbuilt");
+    });
+    expect(container.textContent).toContain("as-built root");
+
+    // create a sibling concept and re-parent galley under it
+    await act(async () => {
+      useApp.getState().newConcept("addition");
+      useApp.getState().setBranch("galley");
+      useApp.getState().reparent("addition");
+    });
+    expect(useApp.getState().project!.files.get("concepts/galley.abl")!).toContain(
+      "layer galley : addition",
+    );
+    expect(useApp.getState().pipelineError).toBeNull();
+
+    // cycle rejected with a toast, file untouched
+    await act(async () => {
+      useApp.getState().setBranch("addition");
+      useApp.getState().reparent("galley");
+    });
+    expect(useApp.getState().toast?.message).toMatch(/cycle/);
+    expect(useApp.getState().project!.files.get("concepts/addition.abl")!).toContain(
+      "layer addition : asbuilt",
+    );
+  });
+
   test("wall tool store path: placing two points appends junctions + wall", async () => {
     root = createRoot(container);
     await act(async () => {

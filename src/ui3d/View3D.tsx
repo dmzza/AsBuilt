@@ -37,12 +37,11 @@ function wallHeight(pipeline: Pipeline, wallKey: string): number {
   return DEFAULT_WALL_HEIGHT;
 }
 
-function buildScene(pipeline: Pipeline, group: THREE.Group, selection: string | null): void {
-  const wallMat = new THREE.MeshStandardMaterial({ color: 0xdfdbd0, roughness: 0.9 });
-  const wallSelMat = new THREE.MeshStandardMaterial({ color: 0x93b4f8, roughness: 0.8 });
-  const fixtureMat = new THREE.MeshStandardMaterial({ color: 0xaba79b, roughness: 0.7 });
-  const fixtureSelMat = new THREE.MeshStandardMaterial({ color: 0x7c9cf0, roughness: 0.7 });
-
+function addWallMeshes(
+  pipeline: Pipeline,
+  group: THREE.Group,
+  matFor: (key: string) => THREE.Material,
+): void {
   const thickness = new Map<string, number>();
   for (const [key, eff] of pipeline.resolved.effective) {
     if (eff.stmt.kind === "walltype") thickness.set(key, eff.stmt.thickness / 64);
@@ -91,12 +90,21 @@ function buildScene(pipeline: Pipeline, group: THREE.Group, selection: string | 
 
     const geo = new THREE.ExtrudeGeometry(shape, { depth: th, bevelEnabled: false });
     geo.translate(0, 0, -th / 2);
-    const mesh = new THREE.Mesh(geo, selection === key ? wallSelMat : wallMat);
+    const mesh = new THREE.Mesh(geo, matFor(key));
     mesh.position.set(a.x, 0, -a.y);
     mesh.rotation.y = Math.atan2((b.y - a.y) / len, (b.x - a.x) / len);
     mesh.userData.key = key;
     group.add(mesh);
   }
+}
+
+function buildScene(pipeline: Pipeline, group: THREE.Group, selection: string | null): void {
+  const wallMat = new THREE.MeshStandardMaterial({ color: 0xdfdbd0, roughness: 0.9 });
+  const wallSelMat = new THREE.MeshStandardMaterial({ color: 0x93b4f8, roughness: 0.8 });
+  const fixtureMat = new THREE.MeshStandardMaterial({ color: 0xaba79b, roughness: 0.7 });
+  const fixtureSelMat = new THREE.MeshStandardMaterial({ color: 0x7c9cf0, roughness: 0.7 });
+
+  addWallMeshes(pipeline, group, (key) => (selection === key ? wallSelMat : wallMat));
 
   for (const f of fixtureViews(pipeline)) {
     const h = FIXTURE_HEIGHTS[f.fixKind] ?? 30;
@@ -125,6 +133,8 @@ export function disposeGroup(group: THREE.Group): void {
 export function View3D(): JSX.Element {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const pipeline = useApp((s) => s.pipeline);
+  const ghostPipeline = useApp((s) => s.ghostPipeline);
+  const ghostOn = useApp((s) => s.ghost);
   const selection = useApp((s) => s.selection);
   const sceneEpoch = useApp((s) => s.sceneEpoch);
   const select = useApp((s) => s.select);
@@ -135,6 +145,7 @@ export function View3D(): JSX.Element {
     camera: THREE.PerspectiveCamera;
     controls: OrbitControls;
     group: THREE.Group;
+    ghostGroup: THREE.Group;
     raf: number;
     fitted: boolean;
     fittedEpoch: number;
@@ -197,6 +208,9 @@ export function View3D(): JSX.Element {
 
     const group = new THREE.Group();
     scene.add(group);
+    // the parent branch's walls, translucent, never raycast
+    const ghostGroup = new THREE.Group();
+    scene.add(ghostGroup);
 
     const state = {
       renderer,
@@ -204,6 +218,7 @@ export function View3D(): JSX.Element {
       camera,
       controls,
       group,
+      ghostGroup,
       raf: 0,
       fitted: false,
       fittedEpoch: -1,
@@ -260,6 +275,7 @@ export function View3D(): JSX.Element {
       renderer.domElement.removeEventListener("pointerdown", onDown);
       renderer.domElement.removeEventListener("pointerup", onUp);
       disposeGroup(group);
+      disposeGroup(ghostGroup);
       controls.dispose();
       renderer.dispose();
       renderer.domElement.remove();
@@ -273,6 +289,22 @@ export function View3D(): JSX.Element {
     if (state === null || pipeline === null) return;
     disposeGroup(state.group);
     buildScene(pipeline, state.group, selection);
+
+    disposeGroup(state.ghostGroup);
+    if (ghostOn && ghostPipeline !== null) {
+      const ghostMat = new THREE.MeshStandardMaterial({
+        color: 0x8f8a7d,
+        roughness: 1,
+        transparent: true,
+        opacity: 0.2,
+        depthWrite: false,
+        // nudge behind coplanar current walls so shared faces don't shimmer
+        polygonOffset: true,
+        polygonOffsetFactor: 2,
+        polygonOffsetUnits: 2,
+      });
+      addWallMeshes(ghostPipeline, state.ghostGroup, () => ghostMat);
+    }
 
     const needsFit = shouldRefitForEpoch(
       state.fittedEpoch,
@@ -293,7 +325,7 @@ export function View3D(): JSX.Element {
       );
       state.controls.update();
     }
-  }, [pipeline, selection, sceneEpoch]);
+  }, [pipeline, ghostPipeline, ghostOn, selection, sceneEpoch]);
 
   return <div ref={wrapRef} className="view3d" />;
 }
