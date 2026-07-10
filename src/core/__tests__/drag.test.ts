@@ -45,9 +45,13 @@ describe("(d) drag rules produce deterministic text edits", () => {
     expect(wallView(p, "k.south")!.lengthInches).toBeCloseTo(IN(`12'-6"`), 2);
   });
 
-  test("drag against a measured width: refusal citing the blocker", () => {
-    const measured = BASE.replace(`12'-0" [approximated]`, `12'-0" [measured 2026-07-02]`);
+  test("drag against a measured width (depth still free): refusal citing the blocker", () => {
+    const measured = BASE.replace(`12'-0" [approximated]`, `12'-0" [measured 2026-07-02]`).replace(
+      `10'-0" [measured 2026-07-01]`,
+      `10'-0" [approximated]`,
+    );
     const project = loadProject({ "asbuilt.abl": measured });
+    // pure-east drag: the free depth can't explain it, the measured width won't
     const proposal = proposeMove(project, "asbuilt", "k.ne", {
       x: s64FromFeet(12.5),
       y: s64FromFeet(10),
@@ -55,6 +59,40 @@ describe("(d) drag rules produce deterministic text edits", () => {
     expect(proposal.kind).toBe("refusal");
     if (proposal.kind !== "refusal") return;
     expect(proposal.blockers).toContain("k.width");
+  });
+
+  test("fully measured room: a corner drag translates it, measurements untouched", () => {
+    const measured = BASE.replace(`12'-0" [approximated]`, `12'-0" [measured 2026-07-02]`);
+    const project = loadProject({ "asbuilt.abl": measured });
+    const proposal = proposeMove(project, "asbuilt", "k.ne", {
+      x: s64FromFeet(12.5),
+      y: s64FromFeet(10),
+    });
+    expect(proposal.kind).toBe("room-move");
+    if (proposal.kind !== "room-move") return;
+    expect(proposal.room).toBe("k");
+    expect(proposal.verified).toBe(true);
+    // the room's at: is rewritten; both measured params survive verbatim
+    const next = applyEdits(project, proposal.edits);
+    const text = next.files.get("asbuilt.abl")!;
+    expect(text).toContain(`room k : rect(k.width, k.depth) { at: ~(6", 0") }`);
+    expect(text).toContain(`param k.width = 12'-0" [measured 2026-07-02]`);
+    const p = resolveAndSolve(layerMap(next), "asbuilt");
+    expect(junctionPos(p.solution, "k.ne")!.x).toBeCloseTo(IN(`12'-6"`), 1);
+  });
+
+  test("dragging the at:-corner moves the room even when a dimension is free", () => {
+    const project = loadProject({ "asbuilt.abl": BASE });
+    const proposal = proposeMove(project, "asbuilt", "k.sw", {
+      x: s64FromFeet(2),
+      y: s64FromFeet(1),
+    });
+    expect(proposal.kind).toBe("room-move");
+    if (proposal.kind !== "room-move") return;
+    const next = applyEdits(project, proposal.edits);
+    expect(next.files.get("asbuilt.abl")!).toContain(
+      `room k : rect(k.width, k.depth) { at: ~(2'-0", 1'-0") }`,
+    );
   });
 
   test("drag an unconstrained junction: rewrites its sketch line", () => {
@@ -116,12 +154,12 @@ describe("(d) drag rules produce deterministic text edits", () => {
     const next = applyEdits(project, edits);
     const p = resolveAndSolve(layerMap(next), "asbuilt");
     expect(wallView(p, "k.north")!.lengthInches).toBeCloseTo(IN(`11'-8 1/2"`), 2);
-    // and now the same drag refuses
+    // and now the same drag can only mean "move the room"
     const proposal = proposeMove(next, "asbuilt", "k.ne", {
       x: s64FromFeet(12.5),
       y: s64FromFeet(10),
     });
-    expect(proposal.kind).toBe("refusal");
+    expect(proposal.kind).toBe("room-move");
   });
 
   test("authored loop (no template): measured-bound corner drag refuses and changes nothing", () => {
