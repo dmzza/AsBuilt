@@ -15,6 +15,7 @@ import {
   levelOfKey,
   levelViews,
   openingViews,
+  previewDiff,
   s64FromInches,
   type Grade,
   type OpeningView,
@@ -94,6 +95,8 @@ export function Plan2D(): JSX.Element {
   const placeFixture = useApp((s) => s.placeFixture);
   const moveFixture = useApp((s) => s.moveFixture);
   const level = useApp((s) => s.level);
+  const preview = useApp((s) => s.preview);
+  const highlight = useApp((s) => s.highlight);
 
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -235,6 +238,83 @@ export function Plan2D(): JSX.Element {
     }
     return walls;
   }, [ghostOn, ghostPipeline, level]);
+
+  // the hovered proposal's would-be geometry, diffed against the live model
+  const previewGeom = useMemo(() => {
+    if (pipeline === null || preview === null) return null;
+    const diff = previewDiff(pipeline, preview);
+    const nextLevels = levelViews(preview);
+    const thickness = new Map<string, number>();
+    for (const [key, eff] of preview.resolved.effective) {
+      if (eff.stmt.kind === "walltype") thickness.set(key, eff.stmt.thickness / 64);
+    }
+    const walls: {
+      key: string;
+      a: { x: number; y: number };
+      b: { x: number; y: number };
+      th: number;
+    }[] = [];
+    for (const key of diff.walls) {
+      const eff = preview.resolved.effective.get(key);
+      if (eff?.stmt.kind !== "wall") continue;
+      if (levelOfKey(eff.stmt.from, nextLevels) !== level) continue;
+      const a = junctionPos(preview.solution, eff.stmt.from);
+      const b = junctionPos(preview.solution, eff.stmt.to);
+      if (a !== null && b !== null) {
+        walls.push({ key, a, b, th: thickness.get(eff.stmt.wallType) ?? 4.5 });
+      }
+    }
+    const openKeys = new Set(diff.openings);
+    const opens = openingViews(preview).filter((o) => {
+      if (!openKeys.has(o.key)) return false;
+      const wallEff = preview.resolved.effective.get(o.wall);
+      return wallEff?.stmt.kind === "wall" && levelOfKey(wallEff.stmt.from, nextLevels) === level;
+    });
+    const fixKeys = new Set(diff.fixtures);
+    const fixes = fixtureViews(preview).filter(
+      (f) => fixKeys.has(f.key) && levelOfKey(f.key, nextLevels) === level,
+    );
+    // removed geometry gets struck through at its current position
+    const curLevels = levelViews(pipeline);
+    const curOpens = new Map(openingViews(pipeline).map((o) => [o.key, o]));
+    const strikes: { key: string; a: { x: number; y: number }; b: { x: number; y: number } }[] = [];
+    for (const key of diff.removed) {
+      const eff = pipeline.resolved.effective.get(key);
+      const s = eff?.stmt;
+      if (s === undefined) continue;
+      if (s.kind === "wall") {
+        if (levelOfKey(s.from, curLevels) !== level) continue;
+        const a = junctionPos(pipeline.solution, s.from);
+        const b = junctionPos(pipeline.solution, s.to);
+        if (a !== null && b !== null) strikes.push({ key, a, b });
+      } else if (s.kind === "meas") {
+        if (levelOfKey(s.a, curLevels) !== level) continue;
+        const a = junctionPos(pipeline.solution, s.a);
+        const b = junctionPos(pipeline.solution, s.b);
+        if (a !== null && b !== null) strikes.push({ key, a, b });
+      } else if (s.kind === "opening") {
+        const o = curOpens.get(key);
+        const wallEff = pipeline.resolved.effective.get(s.wall);
+        if (
+          o !== undefined &&
+          wallEff?.stmt.kind === "wall" &&
+          levelOfKey(wallEff.stmt.from, curLevels) === level
+        ) {
+          strikes.push({ key, a: o.jambA, b: o.jambB });
+        }
+      } else if (s.kind === "fixture") {
+        if (levelOfKey(key, curLevels) !== level) continue;
+        const x = s.at.x / 64;
+        const y = s.at.y / 64;
+        const hw = s.w / 128;
+        const hd = s.d / 128;
+        strikes.push({ key: `${key}:a`, a: { x: x - hw, y: y - hd }, b: { x: x + hw, y: y + hd } });
+        strikes.push({ key: `${key}:b`, a: { x: x - hw, y: y + hd }, b: { x: x + hw, y: y - hd } });
+      }
+    }
+    if (walls.length + opens.length + fixes.length + strikes.length === 0) return null;
+    return { walls, opens, fixes, strikes };
+  }, [pipeline, preview, level]);
 
   const grades = useMemo(
     () => (pipeline === null ? new Map<string, { grade: Grade }>() : allWallGrades(pipeline)),
@@ -1008,6 +1088,189 @@ export function Plan2D(): JSX.Element {
             }}
           />
         ))}
+
+        {/* inspector-hover highlight: the geometry a hovered row refers to */}
+        {highlight.length > 0 && (
+          <g data-highlight pointerEvents="none">
+            {highlight.flatMap((key) => {
+              const out: JSX.Element[] = [];
+              const w = geometry.walls.find((g) => g.key === key);
+              if (w !== undefined) {
+                const a = toScreen(w.a.x, w.a.y);
+                const b = toScreen(w.b.x, w.b.y);
+                out.push(
+                  <line
+                    key={`hl:${key}`}
+                    x1={a.x}
+                    y1={a.y}
+                    x2={b.x}
+                    y2={b.y}
+                    stroke={SHEET.select}
+                    strokeOpacity={0.3}
+                    strokeWidth={Math.max(w.th * view.ppi, 2) + 8}
+                    strokeLinecap="round"
+                  />,
+                );
+              }
+              const j = geometry.junctions.find((g) => g.key === key);
+              if (j !== undefined) {
+                const s = toScreen(j.x, j.y);
+                out.push(
+                  <circle
+                    key={`hl:${key}`}
+                    cx={s.x}
+                    cy={s.y}
+                    r={11}
+                    fill={SHEET.select}
+                    fillOpacity={0.25}
+                  />,
+                );
+              }
+              const m = geometry.measures.find((g) => g.key === key);
+              if (m !== undefined) {
+                const a = toScreen(m.a.x, m.a.y);
+                const b = toScreen(m.b.x, m.b.y);
+                out.push(
+                  <line
+                    key={`hl:${key}:m`}
+                    x1={a.x}
+                    y1={a.y}
+                    x2={b.x}
+                    y2={b.y}
+                    stroke={SHEET.select}
+                    strokeOpacity={0.3}
+                    strokeWidth={9}
+                    strokeLinecap="round"
+                  />,
+                );
+              }
+              const o = openings.find((g) => g.key === key);
+              if (o !== undefined) {
+                const a = toScreen(o.jambA.x, o.jambA.y);
+                const b = toScreen(o.jambB.x, o.jambB.y);
+                out.push(
+                  <line
+                    key={`hl:${key}:o`}
+                    x1={a.x}
+                    y1={a.y}
+                    x2={b.x}
+                    y2={b.y}
+                    stroke={SHEET.select}
+                    strokeOpacity={0.35}
+                    strokeWidth={12}
+                    strokeLinecap="round"
+                  />,
+                );
+              }
+              const f = fixtures.find((g) => g.key === key);
+              if (f !== undefined) {
+                const rotated = f.rot === 90 || f.rot === 270;
+                const fw = rotated ? f.d : f.w;
+                const fd = rotated ? f.w : f.d;
+                const p = toScreen(f.x - fw / 2, f.y + fd / 2);
+                out.push(
+                  <rect
+                    key={`hl:${key}:f`}
+                    x={p.x - 3}
+                    y={p.y - 3}
+                    width={fw * view.ppi + 6}
+                    height={fd * view.ppi + 6}
+                    fill={SHEET.select}
+                    fillOpacity={0.2}
+                    rx={4}
+                  />,
+                );
+              }
+              return out;
+            })}
+          </g>
+        )}
+
+        {/* hover preview: the hypothetical model, diffed against the live one */}
+        {previewGeom !== null && (
+          <g data-preview pointerEvents="none">
+            {previewGeom.strikes.map((s) => {
+              const a = toScreen(s.a.x, s.a.y);
+              const b = toScreen(s.b.x, s.b.y);
+              return (
+                <line
+                  key={`rm:${s.key}`}
+                  x1={a.x}
+                  y1={a.y}
+                  x2={b.x}
+                  y2={b.y}
+                  stroke={SHEET.conflict}
+                  strokeWidth={2}
+                  strokeDasharray="3 3"
+                  strokeOpacity={0.8}
+                />
+              );
+            })}
+            {previewGeom.walls.map((w) => {
+              const a = toScreen(w.a.x, w.a.y);
+              const b = toScreen(w.b.x, w.b.y);
+              return (
+                <g key={`pv:${w.key}`}>
+                  <line
+                    x1={a.x}
+                    y1={a.y}
+                    x2={b.x}
+                    y2={b.y}
+                    stroke={SHEET.select}
+                    strokeOpacity={0.16}
+                    strokeWidth={Math.max(w.th * view.ppi, 2)}
+                  />
+                  <line
+                    x1={a.x}
+                    y1={a.y}
+                    x2={b.x}
+                    y2={b.y}
+                    stroke={SHEET.select}
+                    strokeWidth={1.5}
+                    strokeDasharray="2 3"
+                  />
+                </g>
+              );
+            })}
+            {previewGeom.opens.map((o) => {
+              const a = toScreen(o.jambA.x, o.jambA.y);
+              const b = toScreen(o.jambB.x, o.jambB.y);
+              return (
+                <line
+                  key={`pv:${o.key}`}
+                  x1={a.x}
+                  y1={a.y}
+                  x2={b.x}
+                  y2={b.y}
+                  stroke={SHEET.select}
+                  strokeOpacity={0.5}
+                  strokeWidth={7}
+                />
+              );
+            })}
+            {previewGeom.fixes.map((f) => {
+              const rotated = f.rot === 90 || f.rot === 270;
+              const fw = rotated ? f.d : f.w;
+              const fd = rotated ? f.w : f.d;
+              const p = toScreen(f.x - fw / 2, f.y + fd / 2);
+              return (
+                <rect
+                  key={`pv:${f.key}`}
+                  x={p.x}
+                  y={p.y}
+                  width={fw * view.ppi}
+                  height={fd * view.ppi}
+                  fill={SHEET.select}
+                  fillOpacity={0.08}
+                  stroke={SHEET.select}
+                  strokeWidth={1.5}
+                  strokeDasharray="2 3"
+                  rx={2}
+                />
+              );
+            })}
+          </g>
+        )}
 
         {/* junctions */}
         {geometry.junctions.map((j) => {
