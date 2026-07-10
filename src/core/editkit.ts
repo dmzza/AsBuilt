@@ -11,6 +11,7 @@ import {
   type SetStmt,
   type WallStmt,
 } from "./ast";
+import { resolve } from "./merge";
 import { perturbParam, resolveAndSolve, type Pipeline } from "./model";
 import { parseLayerFile } from "./parser";
 import { printStmt } from "./printer";
@@ -378,21 +379,21 @@ export function proposeAddWall(
  * its companion `.length`/`.axis` statements so no dangling refs remain.
  */
 export function proposeDelete(project: Project, branch: string, key: string): TextEdit[] {
-  const pipeline = resolveAndSolve(layerMap(project), branch);
+  const resolved = resolve(layerMap(project), branch);
   const targets = [key, `${key}.length`, `${key}.axis`].filter((k) =>
-    pipeline.resolved.effective.has(k),
+    resolved.effective.has(k),
   );
   if (targets.length === 0) throw new Error(`nothing to delete at "${key}"`);
 
   // If deleting a junction, also delete all walls that reference it
-  const eff = pipeline.resolved.effective.get(key);
+  const eff = resolved.effective.get(key);
   if (eff?.stmt.kind === "junction") {
-    for (const [wallKey, wallEff] of pipeline.resolved.effective) {
+    for (const [wallKey, wallEff] of resolved.effective) {
       if (wallEff.stmt.kind === "wall") {
         if (wallEff.stmt.from === key || wallEff.stmt.to === key) {
           // Add the wall and its companions to targets
           for (const k of [wallKey, `${wallKey}.length`, `${wallKey}.axis`]) {
-            if (pipeline.resolved.effective.has(k) && !targets.includes(k)) {
+            if (resolved.effective.has(k) && !targets.includes(k)) {
               targets.push(k);
             }
           }
@@ -403,7 +404,7 @@ export function proposeDelete(project: Project, branch: string, key: string): Te
 
   // If deleting a wall, also delete all openings hosted on it
   if (eff?.stmt.kind === "wall") {
-    for (const [openingKey, openingEff] of pipeline.resolved.effective) {
+    for (const [openingKey, openingEff] of resolved.effective) {
       if (openingEff.stmt.kind === "opening" && openingEff.stmt.wall === key) {
         if (!targets.includes(openingKey)) {
           targets.push(openingKey);
@@ -415,12 +416,12 @@ export function proposeDelete(project: Project, branch: string, key: string): Te
   const edits: TextEdit[] = [];
   const tombstones: string[] = [];
   for (const t of targets) {
-    const eff = pipeline.resolved.effective.get(t)!;
-    if (eff.expandedFrom === undefined && eff.layer === branch) {
+    const targetEff = resolved.effective.get(t)!;
+    if (targetEff.expandedFrom === undefined && targetEff.layer === branch) {
       edits.push({
         kind: "replace-line",
         file: project.layers.get(branch)!.file,
-        line: eff.stmt.loc.line,
+        line: targetEff.stmt.loc.line,
         newText: "",
       });
     } else {
@@ -717,6 +718,105 @@ export function createConcept(project: Project, name: string, parent: string): P
   const files = Object.fromEntries(project.files);
   files[file] = `layer ${name} : ${parent}\n`;
   return loadProject(files);
+}
+
+/**
+ * Re-parent `branch` onto `newParent` by rewriting the layer header line.
+ * That IS the rebase — the next resolve re-merges, re-checks, re-solves.
+ * Cycles (new parent descends from `branch`) are rejected here rather than
+ * left to surface as the resolver's runtime cycle error.
+ */
+export function proposeReparent(
+  project: Project,
+  branch: string,
+  newParent: string,
+): TextEdit[] {
+  const target = project.layers.get(branch);
+  if (target === undefined) throw new Error(`no layer "${branch}"`);
+  if (target.parsed.header.parent === null) {
+    throw new Error(`"${branch}" is the as-built root; it has no parent to change`);
+  }
+  if (newParent === branch) throw new Error(`cannot parent "${branch}" to itself`);
+  if (!project.layers.has(newParent)) throw new Error(`unknown parent "${newParent}"`);
+  if (target.parsed.header.parent === newParent) return [];
+  const seen = new Set<string>();
+  let cursor: string | null = newParent;
+  while (cursor !== null && !seen.has(cursor)) {
+    if (cursor === branch) {
+      throw new Error(`cycle: "${newParent}" descends from "${branch}"`);
+    }
+    seen.add(cursor);
+    cursor = project.layers.get(cursor)?.parsed.header.parent ?? null;
+  }
+  const header = { ...target.parsed.header, parent: newParent };
+  return [
+    {
+      kind: "replace-line",
+      file: target.file,
+      line: header.loc.line,
+      newText: printStmt(header),
+    },
+  ];
+}
+
+/**
+ * Resolve a masked correction on `name` (the base changed a value this
+ * branch's override shadows). "keep": hold the override, acknowledge the new
+ * base by rewriting `(was ...)`. "adopt": blank the override so the base
+ * value shows through. The set must be authored in the current branch — a
+ * masked correction on an ancestor's set is that layer's to resolve.
+ */
+export function proposeResolveMasked(
+  project: Project,
+  branch: string,
+  name: string,
+  action: "keep" | "adopt",
+): TextEdit[] {
+  const layers = layerMap(project);
+  const eff = resolve(layers, branch).effective.get(name);
+  if (eff?.stmt.kind !== "set") throw new Error(`no set override on "${name}"`);
+  if (eff.layer !== branch) {
+    throw new Error(`override lives on "${eff.layer}" — resolve it on that sheet`);
+  }
+  const file = project.layers.get(branch)!.file;
+  if (action === "adopt") {
+    return [{ kind: "replace-line", file, line: eff.stmt.loc.line, newText: "" }];
+  }
+  // "keep": the base is what the parent chain resolves without this override.
+  const parent = project.layers.get(branch)!.parsed.header.parent!;
+  const baseEff = resolve(layers, parent).effective.get(name);
+  if (baseEff?.stmt.kind !== "param" && baseEff?.stmt.kind !== "set") {
+    throw new Error(`no base param "${name}" in ancestor layers`);
+  }
+  const updated: SetStmt = { ...eff.stmt, was: baseEff.stmt.value };
+  return [
+    { kind: "replace-line", file, line: eff.stmt.loc.line, newText: printStmt(updated) },
+  ];
+}
+
+/**
+ * Drop the statement behind a review-queue orphan (`unknown-ref`,
+ * `set-missing-base`). Statements that resolved delegate to proposeDelete
+ * (tombstones + companion keys); statements that failed resolution entirely
+ * (a set whose base param is gone) are blanked from the branch file.
+ */
+export function proposeDropOrphan(
+  project: Project,
+  branch: string,
+  key: string,
+): TextEdit[] {
+  const resolved = resolve(layerMap(project), branch);
+  if ([key, `${key}.length`, `${key}.axis`].some((k) => resolved.effective.has(k))) {
+    return proposeDelete(project, branch, key);
+  }
+  const layer = project.layers.get(branch);
+  if (layer === undefined) throw new Error(`no layer "${branch}"`);
+  for (const s of layer.parsed.stmts) {
+    if (stmtKey(s) === key) {
+      return [{ kind: "replace-line", file: layer.file, line: s.loc.line, newText: "" }];
+    }
+  }
+  throw new Error(`nothing to drop at "${key}"`);
 }
 
 /** Change a param value/provenance as a text edit (measure or re-approximate). */
