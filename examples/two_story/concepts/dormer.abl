@@ -1,0 +1,5 @@
+% Concept: push the master bedroom two feet north for a dormered bath.
+% The south corners stay stacked over the living room below.
+layer dormer : asbuilt
+
+set up.m_d = 14'-0" [designed] (was 12'-0")

@@ -179,6 +179,9 @@ const MEAS_RE = new RegExp(
   `^meas\\s+(${NAME})\\s*:\\s*dist\\(\\s*(${NAME})\\s*,\\s*(${NAME})\\s*\\)\\s*=\\s*(${LEN}?)(\\[[^\\]]*\\])?$`,
 );
 const SPACE_RE = new RegExp(`^space\\s+(${NAME})\\s*(\\{.*\\})$`);
+const LEVEL_RE = new RegExp(`^level\\s+(${NAME})\\.\\*\\s*(\\{.*\\})$`);
+const STACK_RE = new RegExp(`^stack\\s+(${NAME})\\s+on\\s+(${NAME})$`);
+const VOID_RE = new RegExp(`^void\\s+(${NAME})\\s*(\\{.*\\})$`);
 const DELETE_RE = new RegExp(`^delete\\s+(${NAME})$`);
 
 function parseStmtLine(line: Line, pendingComments: string[]): Stmt {
@@ -373,6 +376,47 @@ function parseStmtLine(line: Line, pendingComments: string[]): Stmt {
       kind: "space",
       name: m[1]!,
       at: parsePoint(block.get("at")!, loc),
+      loc,
+      leadingComments,
+    };
+  }
+
+  if ((m = LEVEL_RE.exec(body))) {
+    const block = parseBlock(m[2]!, loc);
+    requireKeys(block, ["elev"], [], loc);
+    const em = /^(.*?)(\[[^\]]*\])?$/.exec(block.get("elev")!.trim())!;
+    const { prov } = parseProv(em[2], loc);
+    return {
+      kind: "level",
+      ns: m[1]!,
+      elev: parseLen(em[1]!, loc),
+      prov,
+      loc,
+      leadingComments,
+    };
+  }
+
+  if ((m = STACK_RE.exec(body))) {
+    return {
+      kind: "stack",
+      name: `${m[1]!}.stack`,
+      a: m[1]!,
+      b: m[2]!,
+      loc,
+      leadingComments,
+    };
+  }
+
+  if ((m = VOID_RE.exec(body))) {
+    const block = parseBlock(m[2]!, loc);
+    requireKeys(block, ["at", "size"], [], loc);
+    const { w, h } = parseSize(block.get("size")!, loc);
+    return {
+      kind: "void",
+      name: m[1]!,
+      at: parsePoint(block.get("at")!, loc),
+      w,
+      d: h,
       loc,
       leadingComments,
     };

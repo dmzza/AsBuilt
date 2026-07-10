@@ -81,17 +81,20 @@ for (const [branch] of project.layers) {
 
   const params = allParams(p);
   const audit = params.filter((v) => v.prov === "approximated");
-  const counts = { junctions: 0, walls: 0, openings: 0, fixtures: 0, meas: 0 };
+  const counts = { junctions: 0, walls: 0, openings: 0, fixtures: 0, meas: 0, levels: 0 };
   for (const [, eff] of p.resolved.effective) {
     if (eff.stmt.kind === "junction") counts.junctions++;
     else if (eff.stmt.kind === "wall") counts.walls++;
     else if (eff.stmt.kind === "opening") counts.openings++;
     else if (eff.stmt.kind === "fixture") counts.fixtures++;
     else if (eff.stmt.kind === "meas") counts.meas++;
+    else if (eff.stmt.kind === "level") counts.levels++;
   }
+  const levelsNote = counts.levels > 0 ? `, ${counts.levels + 1} levels` : "";
   console.log(
     `   ok      ${counts.walls} walls, ${counts.junctions} junctions, ` +
-      `${counts.openings} openings, ${counts.fixtures} fixtures, ${counts.meas} measurements`,
+      `${counts.openings} openings, ${counts.fixtures} fixtures, ` +
+      `${counts.meas} measurements${levelsNote}`,
   );
   console.log(
     `   audit   ${audit.length} approximated (to measure): ` +

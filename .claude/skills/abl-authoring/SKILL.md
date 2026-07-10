@@ -143,8 +143,22 @@ fixture fridge { kind: fridge, at: ~(26'-0", 8'-0"), size: 3'-0" x 2'-6", rot: 9
 
 space dining { at: ~(6'-0", 6'-0") }   % room label point
 
+level up.* { elev: 9'-1" [approximated] }   % everything keyed under up.* sits at 9'-1";
+                                            % unmatched keys = ground level at 0"
+stack up.master.sw on lv.sw        % bearing alignment: hard plan coincidence across levels
+void up.stairwell { at: ~(10'-6", 1'-0"), size: 3'-0" x 10'-0" }   % floor opening (stair)
+
 delete k.south.length              % tombstone (e.g. relax a rect default)
 ```
+
+Levels: a level is a namespace blanket (like `rectilinear`). Rooms move
+levels by rename — identity includes location. Name upper-storey params,
+rooms, fixtures, and voids under the level's namespace (`up.m_d`,
+`up.master`, ...). A room on `up.*` may still reference ground params
+(`rect(lv.w, up.m_d)`) — that is the cross-level single-truth pattern.
+`stack` junction pairs tie the storeys' plan positions together; without at
+least one stack the storeys solve as independent sketches. See
+`examples/two_story/` for the full pattern.
 
 ### rect() expansion & wall endpoints (needed for opening anchors)
 

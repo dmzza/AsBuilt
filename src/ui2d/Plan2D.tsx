@@ -12,6 +12,8 @@ import {
   fixtureViews,
   formatLength,
   junctionPos,
+  levelOfKey,
+  levelViews,
   openingViews,
   s64FromInches,
   type Grade,
@@ -91,6 +93,7 @@ export function Plan2D(): JSX.Element {
   const moveOpening = useApp((s) => s.moveOpening);
   const placeFixture = useApp((s) => s.placeFixture);
   const moveFixture = useApp((s) => s.moveFixture);
+  const level = useApp((s) => s.level);
 
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -132,9 +135,11 @@ export function Plan2D(): JSX.Element {
     [view, size],
   );
 
-  // --- gather geometry
+  // --- gather geometry (only the active level's statements draw on the sheet)
   const geometry = useMemo(() => {
     if (pipeline === null) return null;
+    const levels = levelViews(pipeline);
+    const onLevel = (key: string): boolean => levelOfKey(key, levels) === level;
     const thickness = new Map<string, number>();
     for (const [key, eff] of pipeline.resolved.effective) {
       if (eff.stmt.kind === "walltype") thickness.set(key, eff.stmt.thickness / 64);
@@ -147,6 +152,7 @@ export function Plan2D(): JSX.Element {
     }[] = [];
     const junctions: { key: string; x: number; y: number }[] = [];
     const spaces: { key: string; x: number; y: number }[] = [];
+    const voids: { key: string; x: number; y: number; w: number; d: number }[] = [];
     const measures: {
       key: string;
       a: { x: number; y: number };
@@ -159,6 +165,8 @@ export function Plan2D(): JSX.Element {
     for (const [key, eff] of pipeline.resolved.effective) {
       const s = eff.stmt;
       if (s.kind === "wall") {
+        // a wall lives where its endpoints live
+        if (!onLevel(s.from)) continue;
         const a = junctionPos(pipeline.solution, s.from);
         const b = junctionPos(pipeline.solution, s.to);
         if (a !== null && b !== null) {
@@ -166,15 +174,21 @@ export function Plan2D(): JSX.Element {
           wallPairs.add(pairKey(s.from, s.to));
         }
       } else if (s.kind === "junction") {
+        if (!onLevel(key)) continue;
         const p = junctionPos(pipeline.solution, key);
         if (p !== null) junctions.push({ key, x: p.x, y: p.y });
       } else if (s.kind === "space") {
+        if (!onLevel(key)) continue;
         spaces.push({ key, x: s.at.x / 64, y: s.at.y / 64 });
+      } else if (s.kind === "void") {
+        if (!onLevel(key)) continue;
+        voids.push({ key, x: s.at.x / 64, y: s.at.y / 64, w: s.w / 64, d: s.d / 64 });
       }
     }
     for (const [key, eff] of pipeline.resolved.effective) {
       const s = eff.stmt;
       if (s.kind !== "meas") continue;
+      if (!onLevel(s.a)) continue;
       const a = junctionPos(pipeline.solution, s.a);
       const b = junctionPos(pipeline.solution, s.b);
       if (a !== null && b !== null) {
@@ -192,12 +206,13 @@ export function Plan2D(): JSX.Element {
       junctions.length > 0
         ? { x: cx / junctions.length, y: cy / junctions.length }
         : { x: 0, y: 0 };
-    return { walls, junctions, spaces, measures, centroid };
-  }, [pipeline]);
+    return { walls, junctions, spaces, voids, measures, centroid };
+  }, [pipeline, level]);
 
-  // the parent branch's walls, for the ghost overlay
+  // the parent branch's walls on the same level, for the ghost overlay
   const parentWalls = useMemo(() => {
     if (!ghostOn || ghostPipeline === null) return [];
+    const levels = levelViews(ghostPipeline);
     const thickness = new Map<string, number>();
     for (const [key, eff] of ghostPipeline.resolved.effective) {
       if (eff.stmt.kind === "walltype") thickness.set(key, eff.stmt.thickness / 64);
@@ -211,6 +226,7 @@ export function Plan2D(): JSX.Element {
     for (const [key, eff] of ghostPipeline.resolved.effective) {
       const s = eff.stmt;
       if (s.kind !== "wall") continue;
+      if (levelOfKey(s.from, levels) !== level) continue;
       const a = junctionPos(ghostPipeline.solution, s.from);
       const b = junctionPos(ghostPipeline.solution, s.to);
       if (a !== null && b !== null) {
@@ -218,21 +234,28 @@ export function Plan2D(): JSX.Element {
       }
     }
     return walls;
-  }, [ghostOn, ghostPipeline]);
+  }, [ghostOn, ghostPipeline, level]);
 
   const grades = useMemo(
     () => (pipeline === null ? new Map<string, { grade: Grade }>() : allWallGrades(pipeline)),
     [pipeline],
   );
 
-  const openings = useMemo(
-    () => (pipeline === null ? [] : openingViews(pipeline)),
-    [pipeline],
-  );
-  const fixtures = useMemo(
-    () => (pipeline === null ? [] : fixtureViews(pipeline)),
-    [pipeline],
-  );
+  // openings follow their host wall's level; fixtures live where their key says
+  const openings = useMemo(() => {
+    if (pipeline === null) return [];
+    const levels = levelViews(pipeline);
+    return openingViews(pipeline).filter((o) => {
+      const wallEff = pipeline.resolved.effective.get(o.wall);
+      if (wallEff?.stmt.kind !== "wall") return false;
+      return levelOfKey(wallEff.stmt.from, levels) === level;
+    });
+  }, [pipeline, level]);
+  const fixtures = useMemo(() => {
+    if (pipeline === null) return [];
+    const levels = levelViews(pipeline);
+    return fixtureViews(pipeline).filter((f) => levelOfKey(f.key, levels) === level);
+  }, [pipeline, level]);
 
   /** Nearest wall to a world point: distance and center-parameter along it. */
   const nearestWall = useCallback(
@@ -696,6 +719,56 @@ export function Plan2D(): JSX.Element {
                 strokeWidth={1}
                 strokeDasharray="6 4"
               />
+            </g>
+          );
+        })}
+
+        {/* floor voids (stairwells): dashed opening with cross, drafting-style */}
+        {geometry.voids.map((v) => {
+          const p0 = toScreen(v.x, v.y + v.d);
+          const p1 = toScreen(v.x + v.w, v.y);
+          const w = p1.x - p0.x;
+          const h = p1.y - p0.y;
+          return (
+            <g key={v.key} pointerEvents="none">
+              <rect
+                x={p0.x}
+                y={p0.y}
+                width={w}
+                height={h}
+                fill="none"
+                stroke={SHEET.hardware}
+                strokeWidth={1.2}
+                strokeDasharray="7 4"
+              />
+              <line
+                x1={p0.x}
+                y1={p0.y}
+                x2={p0.x + w}
+                y2={p0.y + h}
+                stroke={SHEET.hardware}
+                strokeWidth={0.8}
+                strokeDasharray="7 4"
+              />
+              <line
+                x1={p0.x + w}
+                y1={p0.y}
+                x2={p0.x}
+                y2={p0.y + h}
+                stroke={SHEET.hardware}
+                strokeWidth={0.8}
+                strokeDasharray="7 4"
+              />
+              <text
+                x={p0.x + w / 2}
+                y={p0.y + h / 2 - 4}
+                textAnchor="middle"
+                fontSize={10}
+                fontFamily={MONO}
+                fill={SHEET.label}
+              >
+                open to below
+              </text>
             </g>
           );
         })}

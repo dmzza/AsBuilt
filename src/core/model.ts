@@ -88,6 +88,8 @@ export function defaultAnchors(resolved: Resolved): Set<string> {
   };
   for (const [, eff] of resolved.effective) {
     if (eff.stmt.kind === "wall") union(eff.stmt.from, eff.stmt.to);
+    // a stack ties levels together: the assembly shares one gauge
+    else if (eff.stmt.kind === "stack") union(eff.stmt.a, eff.stmt.b);
   }
 
   const componentBest = new Map<string, string>(); // root -> smallest junction
@@ -372,4 +374,45 @@ export function allWallGrades(
     });
   }
   return out;
+}
+
+/* ---------------------------------------------------------------- levels */
+
+export interface LevelView {
+  /** Namespace of the level statement; null = the ground level. */
+  ns: string | null;
+  elevInches: number;
+  prov: Provenance | null;
+}
+
+/**
+ * All levels of the model, ground first, then by elevation. The ground level
+ * (keys matching no level statement, elevation 0) always exists.
+ */
+export function levelViews(pipeline: Pipeline): LevelView[] {
+  const out: LevelView[] = [{ ns: null, elevInches: 0, prov: null }];
+  for (const [, eff] of pipeline.resolved.effective) {
+    if (eff.stmt.kind !== "level") continue;
+    out.push({
+      ns: eff.stmt.ns,
+      elevInches: s64ToInches(eff.stmt.elev),
+      prov: eff.stmt.prov,
+    });
+  }
+  out.sort((a, b) =>
+    a.ns === null ? -1 : b.ns === null ? 1 : a.elevInches - b.elevInches,
+  );
+  return out;
+}
+
+/** The level a key sits on: longest matching namespace, else ground (null). */
+export function levelOfKey(key: string, levels: LevelView[]): string | null {
+  let best: string | null = null;
+  for (const l of levels) {
+    if (l.ns === null) continue;
+    if (key === l.ns || key.startsWith(`${l.ns}.`)) {
+      if (best === null || l.ns.length > best.length) best = l.ns;
+    }
+  }
+  return best;
 }

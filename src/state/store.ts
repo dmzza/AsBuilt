@@ -73,6 +73,8 @@ interface AppState {
   selection: string | null;
   tool: Tool;
   viewMode: ViewMode;
+  /** Active level namespace for the 2D sheet; null = ground. */
+  level: string | null;
   wallType: string;
   pendingStart: WallEndpoint | null;
   measurePending: string | null;
@@ -104,6 +106,7 @@ interface AppState {
   setParam(name: string, value: S64, prov: Provenance): void;
   setMeasurePending(junction: string | null): void;
   setViewMode(mode: ViewMode): void;
+  setLevel(ns: string | null): void;
   placeOpening(wall: string, centerAlongInches: number): void;
   moveOpening(name: string, offset: S64): void;
   placeFixture(at: Point): void;
@@ -168,6 +171,7 @@ export const useApp = create<AppState>((set, get) => ({
   selection: null,
   tool: "select",
   viewMode: "2d",
+  level: null,
   wallType: "int_2x4",
   pendingStart: null,
   measurePending: null,
@@ -216,6 +220,7 @@ export const useApp = create<AppState>((set, get) => ({
       past: [],
       future: [],
       tool: "select",
+      level: null,
       wallType: firstWallType(project),
       sceneEpoch: get().sceneEpoch + 1,
       ...compute(project, DEMO_BRANCH),
@@ -245,6 +250,7 @@ export const useApp = create<AppState>((set, get) => ({
         editor: null,
         past: [],
         future: [],
+        level: null,
         wallType: firstWallType(project),
         sceneEpoch: get().sceneEpoch + 1,
         ...compute(project, branch),
@@ -386,6 +392,7 @@ export const useApp = create<AppState>((set, get) => ({
         b: end,
         wallType,
         axis,
+        ns: get().level ?? undefined,
       });
       get().runEdits(proposal.edits);
       // chain: next wall starts at this wall's end junction
@@ -466,6 +473,10 @@ export const useApp = create<AppState>((set, get) => ({
     set({ viewMode: mode });
   },
 
+  setLevel(ns) {
+    set({ level: ns, selection: null, pendingStart: null, measurePending: null });
+  },
+
   placeOpening(wall, centerAlongInches) {
     const { project, branch, tool } = get();
     if (project === null || (tool !== "door" && tool !== "window")) return;
@@ -496,7 +507,10 @@ export const useApp = create<AppState>((set, get) => ({
     const { project, branch } = get();
     if (project === null) return;
     try {
-      const { edits, name } = proposeAddFixture(project, branch, { at });
+      const { edits, name } = proposeAddFixture(project, branch, {
+        at,
+        ns: get().level ?? undefined,
+      });
       get().runEdits(edits);
       set({ selection: name, tool: "select" });
     } catch (e) {
