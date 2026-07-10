@@ -1600,9 +1600,11 @@ export default function App(): JSX.Element {
           <ParamsPanel />
           <div className="panel hint-panel">
             <p className="hint">
-              Click a value to edit it. <b>Measure</b>: click a wall, or two junctions for a
-              diagonal, then type the tape reading. Scroll pans, pinch/⌘-scroll zooms — in 2D
-              and 3D. ⌫ deletes, ⌘Z undoes.
+              Click a value to edit it. Drag junctions or walls — a blue ghost shows the
+              result before you release. Hold <b>⌥/Alt</b> or <b>⌘</b> to force through
+              hard (measured) constraints; Review lists leftover fights.{" "}
+              <b>Measure</b>: wall or two junctions, then type the tape. Scroll pans,
+              pinch/⌘-scroll zooms. ⌫ deletes, ⌘Z undoes.
             </p>
           </div>
         </div>

@@ -14,6 +14,7 @@ import {
   proposeEditMeas,
   proposeMeasure,
   proposeMove,
+  proposeMoveWall,
   proposeReparent,
   proposeResolveMasked,
   proposeSetFixture,
@@ -108,7 +109,17 @@ interface AppState {
   setWallType(wallType: string): void;
   select(key: string | null): void;
   runEdits(edits: TextEdit[]): void;
-  dragJunction(name: string, target: { x: S64; y: S64 }): void;
+  dragJunction(
+    name: string,
+    target: { x: S64; y: S64 },
+    opts?: { forceBreak?: boolean },
+  ): void;
+  /** Translate a wall by a world-space delta (inches). */
+  dragWall(
+    name: string,
+    deltaInches: { x: number; y: number },
+    opts?: { forceBreak?: boolean },
+  ): void;
   placeWallPoint(end: WallEndpoint, axis?: "h" | "v"): void;
   cancelPending(): void;
   deleteSelection(): void;
@@ -202,7 +213,9 @@ function editsForTarget(
   }
 }
 
-const PREVIEW_DEBOUNCE_MS = 80;
+/** Hover + drag previews share this; short enough to feel live, long enough
+ *  that force-break (multi solve) doesn't thrash every pointer pixel. */
+const PREVIEW_DEBOUNCE_MS = 50;
 let previewTimer: ReturnType<typeof setTimeout> | undefined;
 
 function firstWallType(project: Project): string {
@@ -473,10 +486,10 @@ export const useApp = create<AppState>((set, get) => ({
     }
   },
 
-  dragJunction(name, target) {
+  dragJunction(name, target, opts) {
     const { project, branch } = get();
     if (project === null) return;
-    const proposal = proposeMove(project, branch, name, target);
+    const proposal = proposeMove(project, branch, name, target, opts);
     if (proposal.kind === "refusal") {
       get().showToast(
         proposal.blockers.length > 0
@@ -487,11 +500,42 @@ export const useApp = create<AppState>((set, get) => ({
       return;
     }
     if (!proposal.verified) {
-      // never apply an edit that doesn't do what the drag asked
       get().showToast("Move has no clean edit; nothing changed", "error");
       return;
     }
-    get().runEdits(proposal.edits);
+    if (proposal.edits.length > 0) get().runEdits(proposal.edits);
+    if (proposal.broke !== undefined && proposal.broke.length > 0) {
+      get().showToast(
+        `Broke ${proposal.broke.join(", ")} — check Review if measurements disagree`,
+        "info",
+      );
+    }
+  },
+
+  dragWall(name, deltaInches, opts) {
+    const { project, branch } = get();
+    if (project === null) return;
+    const proposal = proposeMoveWall(project, branch, name, deltaInches, opts);
+    if (proposal.kind === "refusal") {
+      get().showToast(
+        proposal.blockers.length > 0
+          ? `Locked by ${proposal.blockers.join(", ")}`
+          : proposal.message,
+        "error",
+      );
+      return;
+    }
+    if (!proposal.verified) {
+      get().showToast("Move has no clean edit; nothing changed", "error");
+      return;
+    }
+    if (proposal.edits.length > 0) get().runEdits(proposal.edits);
+    if (proposal.broke !== undefined && proposal.broke.length > 0) {
+      get().showToast(
+        `Broke ${proposal.broke.join(", ")} — check Review if measurements disagree`,
+        "info",
+      );
+    }
   },
 
   placeWallPoint(end, axis) {

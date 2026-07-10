@@ -1,5 +1,12 @@
 import { describe, expect, test } from "vitest";
-import { applyEdits, layerMap, loadProject, proposeMove, proposeSetParam } from "../editkit";
+import {
+  applyEdits,
+  layerMap,
+  loadProject,
+  proposeMove,
+  proposeMoveWall,
+  proposeSetParam,
+} from "../editkit";
 import { resolveAndSolve, wallView } from "../model";
 import { junctionPos } from "../solve";
 import { parseLength, s64FromFeet } from "../units";
@@ -269,5 +276,144 @@ length(dl.west) = dl.depth
     expect(wallView(flagged, "k.north")!.lengthInches).toBeCloseTo(IN("10'"), 2);
     // junction sanity: everything still solves
     expect(junctionPos(flagged.solution, "k.ne")).not.toBeNull();
+  });
+
+  test("diagonal drag updates width and depth together (multi-param)", () => {
+    const project = loadProject({ "asbuilt.abl": BASE });
+    // BASE: width approximated, depth measured — only width is free.
+    // Soft both so the multi-param path can take both knobs.
+    const soft = `layer asbuilt
+
+walltype int_2x4 { thickness: 4 1/2" }
+
+param k.depth = 10'-0" [approximated]
+param k.width = 12'-0" [approximated]
+
+room k : rect(k.width, k.depth)
+`;
+    const p0 = loadProject({ "asbuilt.abl": soft });
+    // NE from (12',10') → (14',12'): need +2' width and +2' depth
+    const proposal = proposeMove(p0, "asbuilt", "k.ne", {
+      x: s64FromFeet(14),
+      y: s64FromFeet(12),
+    });
+    expect(proposal.kind).toBe("param-edit");
+    if (proposal.kind !== "param-edit") return;
+    // Multi-param names joined with +
+    expect(proposal.param.includes("k.width") || proposal.edits.length >= 2).toBe(true);
+    const next = applyEdits(p0, proposal.edits);
+    const text = next.files.get("asbuilt.abl")!;
+    expect(text).toMatch(/param k\.width = 14'/);
+    expect(text).toMatch(/param k\.depth = 12'/);
+    const p = resolveAndSolve(layerMap(next), "asbuilt");
+    expect(wallView(p, "k.north")!.lengthInches).toBeCloseTo(IN("14'"), 1);
+    expect(wallView(p, "k.east")!.lengthInches).toBeCloseTo(IN("12'"), 1);
+    void project;
+  });
+
+  test("axis-aligned drag still uses a single param when it scores perfectly", () => {
+    const soft = `layer asbuilt
+
+walltype int_2x4 { thickness: 4 1/2" }
+
+param k.depth = 10'-0" [approximated]
+param k.width = 12'-0" [approximated]
+
+room k : rect(k.width, k.depth)
+`;
+    const p0 = loadProject({ "asbuilt.abl": soft });
+    const proposal = proposeMove(p0, "asbuilt", "k.ne", {
+      x: s64FromFeet(14),
+      y: s64FromFeet(10),
+    });
+    expect(proposal.kind).toBe("param-edit");
+    if (proposal.kind !== "param-edit") return;
+    // Pure east: only width
+    expect(proposal.param).toBe("k.width");
+    expect(proposal.edits).toHaveLength(1);
+    const next = applyEdits(p0, proposal.edits);
+    expect(next.files.get("asbuilt.abl")).toMatch(/param k\.width = 14'/);
+    expect(next.files.get("asbuilt.abl")).toMatch(/param k\.depth = 10'-0" \[approximated\]/);
+  });
+
+  test("drag wall: free width param moves both north endpoints", () => {
+    const project = loadProject({ "asbuilt.abl": BASE });
+    // Push the east wall further east by 1' (widens the room).
+    const proposal = proposeMoveWall(project, "asbuilt", "k.east", { x: 12, y: 0 });
+    expect(proposal.kind).not.toBe("refusal");
+    if (proposal.kind === "refusal") return;
+    expect(proposal.verified).toBe(true);
+    const next = applyEdits(project, proposal.edits);
+    const p = resolveAndSolve(layerMap(next), "asbuilt");
+    expect(wallView(p, "k.north")!.lengthInches).toBeCloseTo(IN("13'"), 1);
+  });
+
+  test("forceBreak (⌥): topology re-tape lands near drop; leftover fights go to Review", () => {
+    // Fully measured room + diagonal. Force-break NE to (14',12') re-tapes
+    // width+depth from axis spans and the diagonal to the new corner.
+    const src = `layer asbuilt
+
+walltype int_2x4 { thickness: 4 1/2" }
+
+param k.depth = 10'-0" [measured]
+param k.width = 12'-0" [measured]
+
+room k : rect(k.width, k.depth)
+
+meas m_diag : dist(k.sw, k.ne) = 15'-7 1/2" [measured]
+`;
+    const project = loadProject({ "asbuilt.abl": src });
+    expect(resolveAndSolve(layerMap(project), "asbuilt").solution.contradictions).toEqual(
+      [],
+    );
+
+    const forced = proposeMove(
+      project,
+      "asbuilt",
+      "k.ne",
+      { x: s64FromFeet(14), y: s64FromFeet(12) },
+      { forceBreak: true },
+    );
+    expect(forced.kind).not.toBe("refusal");
+    if (forced.kind === "refusal") return;
+    expect(forced.verified).toBe(true);
+    expect(forced.broke?.length ?? 0).toBeGreaterThan(0);
+    const next = applyEdits(project, forced.edits);
+    const p = resolveAndSolve(layerMap(next), "asbuilt");
+    const ne = junctionPos(p.solution, "k.ne")!;
+    // Should land close to the drop — not stuck at 12'×10'
+    expect(ne.x).toBeCloseTo(IN("14'"), 0); // within ~0.5"
+    expect(ne.y).toBeCloseTo(IN("12'"), 0);
+    expect(wallView(p, "k.north")!.lengthInches).toBeCloseTo(IN("14'"), 0);
+    expect(wallView(p, "k.east")!.lengthInches).toBeCloseTo(IN("12'"), 0);
+  });
+
+  test("forceBreak wall drag rewrites measured width", () => {
+    const src = `layer asbuilt
+
+walltype int_2x4 { thickness: 4 1/2" }
+
+param k.depth = 10'-0" [measured]
+param k.width = 12'-0" [measured]
+
+room k : rect(k.width, k.depth)
+`;
+    const project = loadProject({ "asbuilt.abl": src });
+    const refused = proposeMoveWall(project, "asbuilt", "k.east", { x: 24, y: 0 });
+    // Without force, measured width locks a pure east translate of the east wall
+    // (resize). May refuse or room-move; either way force should rewrite width.
+    const forced = proposeMoveWall(
+      project,
+      "asbuilt",
+      "k.east",
+      { x: 24, y: 0 },
+      { forceBreak: true },
+    );
+    expect(forced.kind).not.toBe("refusal");
+    if (forced.kind === "refusal") return;
+    const next = applyEdits(project, forced.edits);
+    const p = resolveAndSolve(layerMap(next), "asbuilt");
+    expect(wallView(p, "k.north")!.lengthInches).toBeCloseTo(IN("14'"), 1);
+    void refused;
   });
 });

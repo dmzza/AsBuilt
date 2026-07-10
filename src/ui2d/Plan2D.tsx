@@ -20,6 +20,8 @@ import {
   levelViews,
   openingViews,
   previewDiff,
+  proposeMove,
+  proposeMoveWall,
   s64FromInches,
   type FaceRef,
   type Grade,
@@ -60,7 +62,27 @@ interface View {
 /** sx/sy = pointer-down screen position: pointerup within CLICK_PX of it is a
  *  click (select only), never an edit. */
 type DragState =
-  | { kind: "junction"; key: string; wx: number; wy: number; sx: number; sy: number }
+  | {
+      kind: "junction";
+      key: string;
+      wx: number;
+      wy: number;
+      sx: number;
+      sy: number;
+      forceBreak: boolean;
+    }
+  | {
+      kind: "wall";
+      key: string;
+      /** World position at pointer-down (for delta). */
+      ox: number;
+      oy: number;
+      wx: number;
+      wy: number;
+      sx: number;
+      sy: number;
+      forceBreak: boolean;
+    }
   | { kind: "opening"; key: string; centerAlong: number; sx: number; sy: number }
   | { kind: "fixture"; key: string; wx: number; wy: number; sx: number; sy: number };
 
@@ -73,6 +95,46 @@ function roundInch(v: number): S64 {
   return s64FromInches(Math.round(v));
 }
 
+/** ⌥/Alt, ⌘/Cmd, or Ctrl — any of these means "force-break hard constraints". */
+function forceBreakFromEvent(e: {
+  altKey: boolean;
+  metaKey: boolean;
+  ctrlKey: boolean;
+}): boolean {
+  return e.altKey || e.metaKey || e.ctrlKey;
+}
+
+/** Debounced propose→solve for the ghost that shows "if I release here". */
+function scheduleDragPreview(
+  drag: Extract<DragState, { kind: "junction" } | { kind: "wall" }>,
+  wx: number,
+  wy: number,
+  forceBreak: boolean,
+  previewEdits: (propose: () => import("../core").TextEdit[]) => void,
+): void {
+  previewEdits(() => {
+    const { project, branch } = useApp.getState();
+    if (project === null) return [];
+    if (drag.kind === "junction") {
+      const p = proposeMove(
+        project,
+        branch,
+        drag.key,
+        { x: roundInch(wx), y: roundInch(wy) },
+        { forceBreak },
+      );
+      if (p.kind === "refusal" || !p.verified) return [];
+      return p.edits;
+    }
+    const dx = wx - drag.ox;
+    const dy = wy - drag.oy;
+    if (Math.hypot(dx, dy) < 0.05) return [];
+    const p = proposeMoveWall(project, branch, drag.key, { x: dx, y: dy }, { forceBreak });
+    if (p.kind === "refusal" || !p.verified) return [];
+    return p.edits;
+  });
+}
+
 export function Plan2D(): JSX.Element {
   const pipeline = useApp((s) => s.pipeline);
   const ghostPipeline = useApp((s) => s.ghostPipeline);
@@ -83,11 +145,14 @@ export function Plan2D(): JSX.Element {
   const measurePending = useApp((s) => s.measurePending);
   const select = useApp((s) => s.select);
   const dragJunction = useApp((s) => s.dragJunction);
+  const dragWall = useApp((s) => s.dragWall);
   const placeWallPoint = useApp((s) => s.placeWallPoint);
   const cancelPending = useApp((s) => s.cancelPending);
   const deleteSelection = useApp((s) => s.deleteSelection);
   const setMeasurePending = useApp((s) => s.setMeasurePending);
   const openEditor = useApp((s) => s.openEditor);
+  const previewEdits = useApp((s) => s.previewEdits);
+  const clearPreview = useApp((s) => s.clearPreview);
   const placeOpening = useApp((s) => s.placeOpening);
   const moveOpening = useApp((s) => s.moveOpening);
   const placeFixture = useApp((s) => s.placeFixture);
@@ -658,6 +723,21 @@ export function Plan2D(): JSX.Element {
     if (tool !== "select") return;
     e.stopPropagation();
     select(key);
+    const svg = svgRef.current;
+    if (svg === null) return;
+    const r = svg.getBoundingClientRect();
+    const { wx, wy } = toWorld(e.clientX - r.left, e.clientY - r.top);
+    setDrag({
+      kind: "wall",
+      key,
+      ox: wx,
+      oy: wy,
+      wx,
+      wy,
+      sx: e.clientX,
+      sy: e.clientY,
+      forceBreak: forceBreakFromEvent(e),
+    });
   };
 
   const onPointerMove = (e: ReactPointerEvent<SVGSVGElement>): void => {
@@ -670,6 +750,13 @@ export function Plan2D(): JSX.Element {
         const view = openings.find((o) => o.key === drag.key);
         const hit = view !== undefined ? nearestWallAlong(geometry, view.wall, wx, wy) : null;
         if (hit !== null) setDrag({ ...drag, centerAlong: hit });
+      } else if (drag.kind === "wall" || drag.kind === "junction") {
+        const forceBreak = drag.forceBreak || forceBreakFromEvent(e);
+        const rw = Math.round(wx);
+        const rh = Math.round(wy);
+        setDrag({ ...drag, wx: rw, wy: rh, forceBreak });
+        // Live preview of release result (debounced solve in the store).
+        scheduleDragPreview(drag, rw, rh, forceBreak, previewEdits);
       } else {
         setDrag({ ...drag, wx: Math.round(wx), wy: Math.round(wy) });
       }
@@ -687,6 +774,7 @@ export function Plan2D(): JSX.Element {
     if (drag !== null) {
       // A press that never travelled is a click: select, don't edit.
       if (Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < CLICK_PX) {
+        clearPreview();
         setDrag(null);
         setPan(null);
         return;
@@ -695,9 +783,26 @@ export function Plan2D(): JSX.Element {
       // reach pointerup without any intermediate pointermove events.
       const rect = e.currentTarget.getBoundingClientRect();
       const { wx, wy } = toWorld(e.clientX - rect.left, e.clientY - rect.top);
+      const forceBreak =
+        drag.kind === "junction" || drag.kind === "wall"
+          ? drag.forceBreak || forceBreakFromEvent(e)
+          : false;
+      // Drop live preview; commit path re-solves for real.
+      clearPreview();
       if (drag.kind === "junction") {
         const moved = Math.hypot(wx - drag.wx, wy - drag.wy) > 0.01 ? { wx, wy } : drag;
-        dragJunction(drag.key, { x: roundInch(moved.wx), y: roundInch(moved.wy) });
+        dragJunction(
+          drag.key,
+          { x: roundInch(moved.wx), y: roundInch(moved.wy) },
+          { forceBreak },
+        );
+      } else if (drag.kind === "wall") {
+        const end = Math.hypot(wx - drag.wx, wy - drag.wy) > 0.01 ? { wx, wy } : drag;
+        const dx = end.wx - drag.ox;
+        const dy = end.wy - drag.oy;
+        if (Math.hypot(dx, dy) > 0.05) {
+          dragWall(drag.key, { x: dx, y: dy }, { forceBreak });
+        }
       } else if (drag.kind === "fixture") {
         const moved = Math.hypot(wx - drag.wx, wy - drag.wy) > 0.01 ? { wx, wy } : drag;
         moveFixture(drag.key, { x: roundInch(moved.wx), y: roundInch(moved.wy) });
@@ -720,7 +825,15 @@ export function Plan2D(): JSX.Element {
     select(key);
     const p = geometry?.junctions.find((j) => j.key === key);
     if (p !== undefined) {
-      setDrag({ kind: "junction", key, wx: p.x, wy: p.y, sx: e.clientX, sy: e.clientY });
+      setDrag({
+        kind: "junction",
+        key,
+        wx: p.x,
+        wy: p.y,
+        sx: e.clientX,
+        sy: e.clientY,
+        forceBreak: forceBreakFromEvent(e),
+      });
     }
   };
 
