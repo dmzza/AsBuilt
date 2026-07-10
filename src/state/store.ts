@@ -472,7 +472,7 @@ export const useApp = create<AppState>((set, get) => ({
     if (proposal.kind === "refusal") {
       get().showToast(
         proposal.blockers.length > 0
-          ? `Locked by measured: ${proposal.blockers.join(", ")}`
+          ? `Locked by ${proposal.blockers.join(", ")}`
           : proposal.message,
         "error",
       );

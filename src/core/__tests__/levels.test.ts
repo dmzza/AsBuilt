@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { applyEdits, layerMap, loadProject, proposeMove } from "../editkit";
 import { parseLayerFile } from "../parser";
 import { printLayerFile } from "../printer";
 import { levelOfKey, levelViews, resolveAndSolve, wallView } from "../model";
@@ -108,6 +109,31 @@ level up.* { elev: 10'-1" [designed] }
     expect(
       p.diagnostics.some((d) => d.code === "unknown-ref" && d.message.includes("ghost")),
     ).toBe(true);
+  });
+
+  test("stacked assembly: one anchor, lower room drags both storeys, upper cites the stack", () => {
+    const proj = loadProject({ "asbuilt.abl": TWO_LEVEL });
+    const pipeline = resolveAndSolve(layerMap(proj), "asbuilt");
+    // one gauge anchor for the whole stacked component — a second (the upper
+    // room's sw) would fight it through the hard stacks and deadlock drags
+    const stacked = [...pipeline.anchors].filter((a) => a === "lv.sw" || a === "up.master.sw");
+    expect(stacked).toEqual(["lv.sw"]);
+
+    const move = proposeMove(proj, "asbuilt", "lv.sw", { x: L("2'"), y: 0 });
+    expect(move.kind).toBe("room-move");
+    if (move.kind !== "room-move") return;
+    expect(move.room).toBe("lv");
+    const next = applyEdits(proj, move.edits);
+    const p = resolveAndSolve(layerMap(next), "asbuilt");
+    expect(junctionPos(p.solution, "lv.sw")!.x).toBeCloseTo(24, 1);
+    // the stacked storey rides along
+    expect(junctionPos(p.solution, "up.master.sw")!.x).toBeCloseTo(24, 1);
+
+    // the upper room is stacked onto the lower: moving it from above refuses
+    const up = proposeMove(proj, "asbuilt", "up.master.sw", { x: L("2'"), y: 0 });
+    expect(up.kind).toBe("refusal");
+    if (up.kind !== "refusal") return;
+    expect(up.blockers.some((b) => b.endsWith(".stack"))).toBe(true);
   });
 
   test("void solves as a no-op and resolves as effective", () => {
