@@ -352,11 +352,15 @@ export function solve(system: System, x0?: Float64Array): Solution {
       }
       lambda *= 10;
     }
-    if (!stepped || converged) {
-      converged = converged || !stepped ? converged || gmax < 1e-6 : converged;
-      if (!stepped) break;
-      if (converged) break;
+    if (!stepped) {
+      // LM can't improve even with a huge lambda: we're at (or pinned near)
+      // the optimum. Accept when the gradient is small relative to the cost —
+      // an inconsistent system (least-squares compromise between hard
+      // constraints) floors the absolute gradient at FD noise ~1e-5.
+      converged = converged || gmax < 1e-6 * (1 + before);
+      break;
     }
+    if (converged) break;
   }
 
   // contradictions: violated hard residuals, grouped by shared variables

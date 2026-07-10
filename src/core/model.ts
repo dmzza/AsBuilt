@@ -60,10 +60,11 @@ export interface Pipeline {
  * junction (deterministic across solves).
  */
 export function defaultAnchors(resolved: Resolved): Set<string> {
-  const anchors = new Set<string>();
+  // candidate anchors: expanded rect rooms' sw corners
+  const candidates = new Set<string>();
   for (const [key, eff] of resolved.effective) {
     if (eff.stmt.kind !== "junction") continue;
-    if (eff.expandedFrom !== undefined && key.endsWith(".sw")) anchors.add(key);
+    if (eff.expandedFrom !== undefined && key.endsWith(".sw")) candidates.add(key);
   }
 
   // union-find over junctions connected by walls
@@ -92,16 +93,27 @@ export function defaultAnchors(resolved: Resolved): Set<string> {
     else if (eff.stmt.kind === "stack") union(eff.stmt.a, eff.stmt.b);
   }
 
-  const componentBest = new Map<string, string>(); // root -> smallest junction
-  const componentAnchored = new Set<string>();
+  // Exactly ONE anchor per component: two anchors in one component (e.g.
+  // stacked rooms, each contributing its sw) fight each other through the
+  // hard constraints and deadlock translation. Prefer a room sw corner.
+  const anchors = new Set<string>();
+  const bestCandidate = new Map<string, string>();
+  const bestJunction = new Map<string, string>();
   for (const j of parent.keys()) {
     const root = find(j);
-    if (anchors.has(j)) componentAnchored.add(root);
-    const best = componentBest.get(root);
-    if (best === undefined || j < best) componentBest.set(root, j);
+    if (candidates.has(j)) {
+      const c = bestCandidate.get(root);
+      if (c === undefined || j < c) bestCandidate.set(root, j);
+    }
+    const b = bestJunction.get(root);
+    if (b === undefined || j < b) bestJunction.set(root, j);
   }
-  for (const [root, best] of componentBest) {
-    if (!componentAnchored.has(root)) anchors.add(best);
+  for (const [root, best] of bestJunction) {
+    anchors.add(bestCandidate.get(root) ?? best);
+  }
+  // room corners with no walls at all still gauge themselves
+  for (const c of candidates) {
+    if (!parent.has(c)) anchors.add(c);
   }
   return anchors;
 }

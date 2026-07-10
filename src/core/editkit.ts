@@ -8,6 +8,7 @@ import {
   type ParamStmt,
   type ParsedLayer,
   type Point,
+  type RoomRectStmt,
   type SetStmt,
   type WallStmt,
 } from "./ast";
@@ -85,6 +86,7 @@ export type MoveProposal =
       verified: boolean;
     }
   | { kind: "sketch-edit"; junction: string; edits: TextEdit[]; verified: boolean }
+  | { kind: "room-move"; room: string; edits: TextEdit[]; verified: boolean }
   | { kind: "refusal"; blockers: string[]; message: string };
 
 const SENS_TOL = 0.05; // inches response to 1" param shift
@@ -219,6 +221,53 @@ export function proposeMove(
     }
   }
 
+  // Translating a rect room: dragging its at:-corner (sw) moves the room by
+  // rewriting `at:`. Any corner works when the room's dimensions offer no
+  // freedom at this junction (fully measured room = rigid; a drag can only
+  // mean "put it somewhere else"). Params were tried first, so a resize
+  // reading of the drag always wins over a translate reading.
+  const jEff = pipeline.resolved.effective.get(junction);
+  if (jEff?.expandedFrom !== undefined) {
+    const roomKey = jEff.expandedFrom;
+    const roomEff = pipeline.resolved.effective.get(roomKey);
+    if (
+      roomEff?.stmt.kind === "room" &&
+      (junction === `${roomKey}.sw` || free.length === 0)
+    ) {
+      const rs = roomEff.stmt;
+      const updated: RoomRectStmt = {
+        ...rs,
+        at: {
+          x: (rs.at?.x ?? 0) + s64FromInches(delta.x),
+          y: (rs.at?.y ?? 0) + s64FromInches(delta.y),
+        },
+      };
+      const owner = project.layers.get(roomEff.layer);
+      if (owner !== undefined) {
+        const edits: TextEdit[] =
+          roomEff.layer === branch
+            ? [
+                {
+                  kind: "replace-line",
+                  file: owner.file,
+                  line: rs.loc.line,
+                  newText: printStmt(updated),
+                },
+              ]
+            : [
+                {
+                  kind: "append",
+                  file: project.layers.get(branch)!.file,
+                  lines: [printStmt(updated)],
+                },
+              ];
+        if (verifyMove(project, edits, branch, junction, targetIn)) {
+          return { kind: "room-move", room: roomKey, edits, verified: true };
+        }
+      }
+    }
+  }
+
   // No free param explains the drag. Sketch-dominated?
   const probe = buildSystem(pipeline.resolved, {
     anchors: pipeline.anchors,
@@ -261,15 +310,24 @@ export function proposeMove(
   for (const [key, eff] of pipeline.resolved.effective) {
     if (eff.stmt.kind === "meas" && (eff.stmt.a === junction || eff.stmt.b === junction)) {
       blockers.add(key);
+    } else if (
+      eff.stmt.kind === "stack" &&
+      (eff.stmt.a === junction || eff.stmt.b === junction)
+    ) {
+      blockers.add(key);
     }
   }
+  const roomHint =
+    jEff?.expandedFrom !== undefined
+      ? ` (drag ${jEff.expandedFrom}.sw to move the room)`
+      : "";
   return {
     kind: "refusal",
     blockers: [...blockers].sort(),
     message:
       blockers.size > 0
-        ? `locked by measured: ${[...blockers].sort().join(", ")}`
-        : `no free parameter or sketch explains this drag`,
+        ? `locked by ${[...blockers].sort().join(", ")}`
+        : `no free parameter or sketch explains this drag${roomHint}`,
   };
 }
 
