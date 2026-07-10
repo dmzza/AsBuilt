@@ -485,9 +485,16 @@ export function Plan2D(): JSX.Element {
     return () => window.removeEventListener("keydown", onKey);
   }, [cancelPending, select, deleteSelection, setMeasurePending]);
 
-  // --- snapping helper
+  // --- snapping helper: junctions first, then mid-wall T-join, then grid
   const snap = useCallback(
-    (wx: number, wy: number): { end: { existing: string } | { x: S64; y: S64 }; wx: number; wy: number } => {
+    (
+      wx: number,
+      wy: number,
+    ): {
+      end: { existing: string } | { onWall: string; x: S64; y: S64 } | { x: S64; y: S64 };
+      wx: number;
+      wy: number;
+    } => {
       if (geometry !== null) {
         const tol = JUNCTION_SNAP_PX / view.ppi;
         let best: { key: string; d: number; x: number; y: number } | null = null;
@@ -499,6 +506,45 @@ export function Plan2D(): JSX.Element {
         }
         if (best !== null) {
           return { end: { existing: best.key }, wx: best.x, wy: best.y };
+        }
+
+        // Mid-wall snap → auto T-join split (not within ~3" of either endpoint).
+        const wallTol = Math.max(tol, 10 / view.ppi);
+        let bestWall: {
+          key: string;
+          d: number;
+          x: number;
+          y: number;
+        } | null = null;
+        for (const w of geometry.walls) {
+          const vx = w.b.x - w.a.x;
+          const vy = w.b.y - w.a.y;
+          const len2 = vx * vx + vy * vy;
+          if (len2 < 0.01) continue;
+          const len = Math.sqrt(len2);
+          let t = ((wx - w.a.x) * vx + (wy - w.a.y) * vy) / len2;
+          t = Math.max(0, Math.min(1, t));
+          const along = t * len;
+          if (along < 3 || along > len - 3) continue; // leave corners to junction snap
+          const px = w.a.x + vx * t;
+          const py = w.a.y + vy * t;
+          const d = Math.hypot(wx - px, wy - py);
+          // Prefer a hit within the wall's half-thickness, else the pixel tol.
+          const faceTol = Math.max(wallTol, w.th / 2 + 2 / view.ppi);
+          if (d < faceTol && (bestWall === null || d < bestWall.d)) {
+            bestWall = { key: w.key, d, x: px, y: py };
+          }
+        }
+        if (bestWall !== null) {
+          return {
+            end: {
+              onWall: bestWall.key,
+              x: roundInch(bestWall.x),
+              y: roundInch(bestWall.y),
+            },
+            wx: bestWall.x,
+            wy: bestWall.y,
+          };
         }
       }
       const rx = Math.round(wx / GRID_INCH) * GRID_INCH;
@@ -515,6 +561,7 @@ export function Plan2D(): JSX.Element {
       const p = junctionPos(pipeline.solution, pendingStart.existing);
       return p === null ? null : { wx: p.x, wy: p.y };
     }
+    // Free point or mid-wall T-join target (both carry sketch x/y in s64).
     return { wx: pendingStart.x / 64, wy: pendingStart.y / 64 };
   }, [pendingStart, pipeline]);
 
@@ -545,7 +592,9 @@ export function Plan2D(): JSX.Element {
         const s = snap(snapped.wx, snapped.wy);
         // an existing-junction end keeps its own position; axis only applies
         // when the geometry is really aligned after snapping
-        placeWallPoint(s.end, "existing" in s.end ? undefined : snapped.axis);
+        // Axis constraint only when the free end isn't locked to existing topology.
+        const lockEnd = "existing" in s.end || "onWall" in s.end;
+        placeWallPoint(s.end, lockEnd ? undefined : snapped.axis);
       }
       return;
     }

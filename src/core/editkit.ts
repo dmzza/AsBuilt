@@ -349,7 +349,16 @@ export function genName(project: Project, prefix: string): string {
   }
 }
 
-export type WallEndpoint = { x: S64; y: S64 } | { existing: string };
+/**
+ * Endpoint of a drawn wall:
+ * - free sketch point
+ * - existing junction (shared topology)
+ * - mid-wall T-join: project onto `onWall` and split the host there
+ */
+export type WallEndpoint =
+  | { x: S64; y: S64 }
+  | { existing: string }
+  | { onWall: string; x: S64; y: S64 };
 
 export interface AddWallProposal {
   edits: TextEdit[];
@@ -357,10 +366,204 @@ export interface AddWallProposal {
   junctions: string[];
 }
 
+export interface SplitWallProposal {
+  edits: TextEdit[];
+  /** New mid-wall junction at the split. */
+  junction: string;
+  /** Host segment from original `from` → mid (reuses host name when possible). */
+  wallA: string;
+  /** Host segment from mid → original `to`. */
+  wallB: string;
+}
+
+/** Refuse a split this close to either host endpoint (inches). */
+const SPLIT_END_EPS_IN = 3;
+
 /**
- * Draw a wall: new junctions for free endpoints, reuse for `existing` ones
- * (shared walls emerge by drawing against existing junctions). An `axis`
- * constraint is emitted when the UI snapped the wall to an axis.
+ * Split a host wall at a world point (projected onto the centerline).
+ * Replaces the host with two collinear segments sharing a new T-junction,
+ * retargets openings onto the correct segment, and drops whole-span length
+ * bindings (partial spans no longer equal the room param).
+ */
+export function proposeSplitWall(
+  project: Project,
+  branch: string,
+  wallName: string,
+  at: { x: S64; y: S64 },
+): SplitWallProposal {
+  const pipeline = resolveAndSolve(layerMap(project), branch);
+  const wallEff = pipeline.resolved.effective.get(wallName);
+  if (wallEff?.stmt.kind !== "wall") throw new Error(`no wall "${wallName}"`);
+  const host = wallEff.stmt;
+  const pa = pipelineJunction(pipeline, host.from);
+  const pb = pipelineJunction(pipeline, host.to);
+  const vx = pb.x - pa.x;
+  const vy = pb.y - pa.y;
+  const len2 = vx * vx + vy * vy;
+  if (len2 < 0.01) throw new Error(`wall "${wallName}" is degenerate`);
+  const len = Math.sqrt(len2);
+  const atIn = { x: at.x / 64, y: at.y / 64 };
+  let t = ((atIn.x - pa.x) * vx + (atIn.y - pa.y) * vy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  const along = t * len;
+  if (along < SPLIT_END_EPS_IN || along > len - SPLIT_END_EPS_IN) {
+    throw new Error(
+      `split point too close to an endpoint of ${wallName} (use the corner junction)`,
+    );
+  }
+  const mx = pa.x + vx * t;
+  const my = pa.y + vy * t;
+  const midSketch = { x: s64FromInches(mx), y: s64FromInches(my) };
+
+  // Names for mid junction and the second segment.
+  const midJ = nextFreeName(project, `${wallName}.j`);
+  const wallB = nextFreeName(project, `${wallName}.b`);
+  const wallA = wallName; // reclaim host name for the from→mid stub
+
+  const axisEff = pipeline.resolved.effective.get(`${wallName}.axis`);
+  const orient =
+    axisEff?.stmt.kind === "axis" ? axisEff.stmt.orient : undefined;
+
+  // 1) Remove host wall + whole-span bindings (length no longer applies to either stub).
+  const edits: TextEdit[] = [...proposeDelete(project, branch, wallName)];
+
+  // 2) Mid junction + two stubs (+ axes if the host was axis-aligned).
+  const lines: string[] = [];
+  lines.push(
+    printStmt({
+      kind: "junction",
+      name: midJ,
+      sketch: midSketch,
+      loc: { file: "", line: 0 },
+      leadingComments: [],
+    }),
+  );
+  lines.push(
+    printStmt({
+      kind: "wall",
+      name: wallA,
+      from: host.from,
+      to: midJ,
+      wallType: host.wallType,
+      loc: { file: "", line: 0 },
+      leadingComments: [],
+    }),
+  );
+  lines.push(
+    printStmt({
+      kind: "wall",
+      name: wallB,
+      from: midJ,
+      to: host.to,
+      wallType: host.wallType,
+      loc: { file: "", line: 0 },
+      leadingComments: [],
+    }),
+  );
+  if (orient !== undefined) {
+    lines.push(
+      printStmt({
+        kind: "axis",
+        name: `${wallA}.axis`,
+        wall: wallA,
+        orient,
+        loc: { file: "", line: 0 },
+        leadingComments: [],
+      }),
+    );
+    lines.push(
+      printStmt({
+        kind: "axis",
+        name: `${wallB}.axis`,
+        wall: wallB,
+        orient,
+        loc: { file: "", line: 0 },
+        leadingComments: [],
+      }),
+    );
+  }
+
+  // 3) Re-host openings that lived on the old wall onto the correct stub.
+  //    Measure near-jamb distance from host.from; assign by center.
+  for (const [, eff] of pipeline.resolved.effective) {
+    if (eff.stmt.kind !== "opening" || eff.stmt.wall !== wallName) continue;
+    const op = eff.stmt;
+    const offIn = evalExprOffset(op, pipeline) / 64;
+    const wIn = op.width / 64;
+    const fromAnchored = op.anchor === host.from;
+    const startFromFrom = fromAnchored ? offIn : len - offIn - wIn;
+    const center = startFromFrom + wIn / 2;
+    const onA = center <= along;
+    const newWall = onA ? wallA : wallB;
+    const newAnchor = onA ? host.from : midJ;
+    const newStart = Math.max(0, Math.round(onA ? startFromFrom : startFromFrom - along));
+    const updated: OpeningStmt = {
+      ...op,
+      wall: newWall,
+      anchor: newAnchor,
+      offset: { terms: [{ sign: 1, kind: "lit", value: s64FromInches(newStart) }] },
+    };
+    if (eff.layer === branch && eff.expandedFrom === undefined) {
+      edits.push({
+        kind: "replace-line",
+        file: project.layers.get(branch)!.file,
+        line: op.loc.line,
+        newText: printStmt(updated),
+      });
+    } else {
+      lines.push(printStmt(updated));
+    }
+  }
+
+  edits.push({ kind: "append", file: project.layers.get(branch)!.file, lines });
+  return { edits, junction: midJ, wallA, wallB };
+}
+
+/** Offset of an opening in S64, evaluating any param refs. */
+function evalExprOffset(op: OpeningStmt, pipeline: Pipeline): S64 {
+  const params = new Map<string, S64>();
+  for (const [key, eff] of pipeline.resolved.effective) {
+    if (eff.stmt.kind === "param" || eff.stmt.kind === "set") {
+      params.set(key, eff.stmt.value);
+    }
+  }
+  let total = 0;
+  for (const t of op.offset.terms) {
+    if (t.kind === "lit") total += t.sign * t.value;
+    else {
+      const v = params.get(t.name);
+      if (v === undefined) throw new Error(`opening ${op.name}: unknown param ${t.name}`);
+      total += t.sign * v;
+    }
+  }
+  return total;
+}
+
+/** First free name among `prefix`, `prefix1`, `prefix2`, … */
+function nextFreeName(project: Project, prefix: string): string {
+  const used = collectNames(project);
+  if (!used.has(prefix)) return prefix;
+  for (let n = 1; ; n++) {
+    const c = `${prefix}${n}`;
+    if (!used.has(c)) return c;
+  }
+}
+
+function collectNames(project: Project): Set<string> {
+  const used = new Set<string>();
+  for (const [, l] of project.layers) {
+    for (const s of l.parsed.stmts) {
+      const key = stmtKey(s);
+      if (key !== null) used.add(key);
+    }
+  }
+  return used;
+}
+
+/**
+ * Draw a wall: new junctions for free endpoints, reuse for `existing` ones,
+ * auto-split host walls for mid-wall T-joins (`onWall`). An `axis` constraint
+ * is emitted when the UI snapped the wall to an axis.
  */
 export function proposeAddWall(
   project: Project,
@@ -376,6 +579,23 @@ export function proposeAddWall(
 ): AddWallProposal {
   const file = project.layers.get(branch);
   if (file === undefined) throw new Error(`no layer "${branch}"`);
+
+  // Resolve T-joins first so subsequent free names and topology see the splits.
+  let cur = project;
+  const edits: TextEdit[] = [];
+  const resolveEnd = (end: WallEndpoint): string | { x: S64; y: S64 } => {
+    if ("existing" in end) return end.existing;
+    if ("onWall" in end) {
+      const split = proposeSplitWall(cur, branch, end.onWall, { x: end.x, y: end.y });
+      edits.push(...split.edits);
+      cur = applyEdits(cur, split.edits);
+      return split.junction;
+    }
+    return { x: end.x, y: end.y };
+  };
+  const endA = resolveEnd(args.a);
+  const endB = resolveEnd(args.b);
+
   const lines: string[] = [];
   const created: string[] = [];
   const junctionNames: string[] = [];
@@ -384,58 +604,61 @@ export function proposeAddWall(
   const jPrefix = `${p}j`;
   const wPrefix = `${p}w`;
 
-  for (const end of [args.a, args.b]) {
-    if ("existing" in end) {
-      junctionNames.push(end.existing);
+  for (const end of [endA, endB]) {
+    if (typeof end === "string") {
+      junctionNames.push(end);
     } else {
-      // genName scans authored statements only; bump past what we just made
-      let name = genName(project, jPrefix);
-      while (created.includes(name)) {
+      let name = genName(cur, jPrefix);
+      while (created.includes(name) || junctionNames.includes(name)) {
         counter += 1;
         name = `${jPrefix}${parseInt(name.slice(jPrefix.length), 10) + counter}`;
       }
       created.push(name);
       junctionNames.push(name);
-      const j: JunctionStmt = {
-        kind: "junction",
-        name,
-        sketch: { x: end.x, y: end.y },
-        loc: { file: "", line: 0 },
-        leadingComments: [],
-      };
-      lines.push(printStmt(j));
+      lines.push(
+        printStmt({
+          kind: "junction",
+          name,
+          sketch: { x: end.x, y: end.y },
+          loc: { file: "", line: 0 },
+          leadingComments: [],
+        }),
+      );
     }
   }
 
-  let wallName = genName(project, wPrefix);
-  while (created.includes(wallName)) {
+  let wallName = genName(cur, wPrefix);
+  while (created.includes(wallName) || wallName === junctionNames[0] || wallName === junctionNames[1]) {
     wallName = `${wPrefix}${parseInt(wallName.slice(wPrefix.length), 10) + 1}`;
   }
-  const wall: WallStmt = {
-    kind: "wall",
-    name: wallName,
-    from: junctionNames[0]!,
-    to: junctionNames[1]!,
-    wallType: args.wallType,
-    loc: { file: "", line: 0 },
-    leadingComments: [],
-  };
-  lines.push(printStmt(wall));
-
-  if (args.axis !== undefined) {
-    const axis: AxisStmt = {
-      kind: "axis",
-      name: `${wallName}.axis`,
-      wall: wallName,
-      orient: args.axis,
+  lines.push(
+    printStmt({
+      kind: "wall",
+      name: wallName,
+      from: junctionNames[0]!,
+      to: junctionNames[1]!,
+      wallType: args.wallType,
       loc: { file: "", line: 0 },
       leadingComments: [],
-    };
-    lines.push(printStmt(axis));
+    }),
+  );
+
+  if (args.axis !== undefined) {
+    lines.push(
+      printStmt({
+        kind: "axis",
+        name: `${wallName}.axis`,
+        wall: wallName,
+        orient: args.axis,
+        loc: { file: "", line: 0 },
+        leadingComments: [],
+      }),
+    );
   }
 
+  edits.push({ kind: "append", file: file.file, lines });
   return {
-    edits: [{ kind: "append", file: file.file, lines }],
+    edits,
     wall: wallName,
     junctions: junctionNames,
   };
@@ -446,13 +669,116 @@ export function proposeAddWall(
  * template-expanded statements get tombstones. Deleting a wall also removes
  * its companion `.length`/`.axis` statements so no dangling refs remain.
  */
+/**
+ * Freeze the visible geometry: rewrite free junction sketches (and soft param
+ * targets) to the current solve so a subsequent topology edit does not let the
+ * soft regularizer drag the plan to a new compromise.
+ *
+ * Expanded junctions are pierced by authoring an explicit `junction` on the
+ * branch (expansion skips keys that already exist).
+ */
+export function proposeBakeSolvedPose(
+  project: Project,
+  branch: string,
+  pipeline?: Pipeline,
+): TextEdit[] {
+  const pipe = pipeline ?? resolveAndSolve(layerMap(project), branch);
+  const file = project.layers.get(branch);
+  if (file === undefined) throw new Error(`no layer "${branch}"`);
+
+  const BAKE_TOL = 1 / 32; // inches
+  const edits: TextEdit[] = [];
+  const append: string[] = [];
+
+  // Soft params → solved value (same provenance). Hard measured stay put.
+  for (const [key, eff] of pipe.resolved.effective) {
+    if (eff.stmt.kind !== "param" && eff.stmt.kind !== "set") continue;
+    if (eff.stmt.prov === "measured") continue;
+    const solved = pipe.solution.system.varIndex.get(`p:${key}`);
+    if (solved === undefined) continue;
+    const solvedIn = pipe.solution.x[solved]!;
+    const authoredIn = eff.stmt.value / 64;
+    if (Math.abs(solvedIn - authoredIn) <= BAKE_TOL) continue;
+    const newVal = s64FromInches(solvedIn);
+    try {
+      edits.push(
+        ...proposeSetParam(project, branch, key, newVal, eff.stmt.prov, eff.stmt.date),
+      );
+    } catch {
+      // ignore uneditable
+    }
+  }
+
+  for (const [key, eff] of pipe.resolved.effective) {
+    if (eff.stmt.kind !== "junction") continue;
+    const pos = junctionPos(pipe.solution, key);
+    if (pos === null) continue;
+    const sk = eff.stmt.sketch;
+    const sx = sk.x / 64;
+    const sy = sk.y / 64;
+    if (Math.abs(pos.x - sx) <= BAKE_TOL && Math.abs(pos.y - sy) <= BAKE_TOL) continue;
+
+    const updated: JunctionStmt = {
+      kind: "junction",
+      name: key,
+      sketch: { x: s64FromInches(pos.x), y: s64FromInches(pos.y) },
+      loc: { file: "", line: 0 },
+      leadingComments: [],
+    };
+    // Own authored free junction: rewrite in place. Expanded / inherited: pierce.
+    if (eff.expandedFrom === undefined && eff.layer === branch) {
+      edits.push({
+        kind: "replace-line",
+        file: file.file,
+        line: eff.stmt.loc.line,
+        newText: printStmt(updated),
+      });
+    } else {
+      append.push(printStmt(updated));
+    }
+  }
+
+  if (append.length > 0) {
+    edits.push({ kind: "append", file: file.file, lines: append });
+  }
+  return edits;
+}
+
+/**
+ * Delete an element. Own authored lines are blanked; inherited or
+ * template-expanded statements get tombstones. Deleting a wall also removes
+ * its companion `.length`/`.axis` statements so no dangling refs remain.
+ *
+ * Before removing geometry, the current solved pose is baked into sketches /
+ * soft params so the re-solve after delete does not drift the rest of the plan
+ * toward a new soft compromise ("delete should change nothing else").
+ */
 export function proposeDelete(project: Project, branch: string, key: string): TextEdit[] {
-  const resolved = resolve(layerMap(project), branch);
+  // Snapshot pose while the deleted element still constrains the model.
+  const pipeline = resolveAndSolve(layerMap(project), branch);
+  const resolved = pipeline.resolved;
   const targets = [key, `${key}.length`, `${key}.axis`].filter((k) =>
     resolved.effective.has(k),
   );
   if (targets.length === 0) throw new Error(`nothing to delete at "${key}"`);
-  const edits: TextEdit[] = [];
+
+  // Only bake when removing real geometry (walls / openings / fixtures / junctions),
+  // not when tombstoning a lone .length / .axis for trapezoid relax.
+  const primary = resolved.effective.get(key);
+  const bakeGeometry =
+    primary !== undefined &&
+    (primary.stmt.kind === "wall" ||
+      primary.stmt.kind === "opening" ||
+      primary.stmt.kind === "fixture" ||
+      primary.stmt.kind === "junction" ||
+      primary.stmt.kind === "meas");
+
+  const edits: TextEdit[] = bakeGeometry
+    ? [...proposeBakeSolvedPose(project, branch, pipeline)]
+    : [];
+  // Bake may have rewritten lines; re-resolve ownership against original project
+  // is fine — bake either replaced sketches (same lines) or appended pierces.
+  // Delete targets still refer to pre-bake statement locations for owned walls.
   const tombstones: string[] = [];
   for (const t of targets) {
     const eff = resolved.effective.get(t)!;

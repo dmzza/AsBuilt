@@ -6,11 +6,13 @@ import {
   loadProject,
   proposeAddWall,
   proposeDelete,
+  proposeSplitWall,
 } from "../editkit";
 import { resolveAndSolve, wallView } from "../model";
 import { parseLayerFile } from "../parser";
 import { printLayerFile } from "../printer";
-import { parseLength, s64FromFeet } from "../units";
+import { junctionPos } from "../solve";
+import { parseLength, s64FromFeet, s64FromInches } from "../units";
 
 const IN = (s: string): number => parseLength(s) / 64;
 
@@ -111,6 +113,123 @@ describe("proposeAddWall", () => {
     expect(p2.wall).toBe("w2");
     expect(p2.junctions).toEqual(["j3", "j4"]);
   });
+
+  test("T-join into a room wall: host splits, stem attaches at mid junction", () => {
+    const project = loadProject({ "asbuilt.abl": BASE });
+    // Midpoint of k.south (from sw~0,0 to se~12',0): (6', 0)
+    const proposal = proposeAddWall(project, "asbuilt", {
+      a: { onWall: "k.south", x: s64FromFeet(6), y: 0 },
+      b: { x: s64FromFeet(6), y: s64FromFeet(-4) },
+      wallType: "int_2x4",
+      axis: "v",
+    });
+    const next = applyEdits(project, proposal.edits);
+    const text = next.files.get("asbuilt.abl")!;
+    // Host wall was expanded → tombstoned; stubs + mid re-authored
+    expect(text).toContain("delete k.south");
+    expect(text).toContain("delete k.south.length");
+    expect(text).toMatch(/wall k\.south \{ from: k\.sw, to: k\.south\.j/);
+    expect(text).toMatch(/wall k\.south\.b \{ from: k\.south\.j, to: k\.se/);
+    // Stem uses the mid junction
+    expect(proposal.junctions[0]).toBe("k.south.j");
+
+    const p = resolveAndSolve(layerMap(next), "asbuilt");
+    expect(p.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    // Two host stubs + stem
+    expect(wallView(p, "k.south")).not.toBeNull();
+    expect(wallView(p, "k.south.b")).not.toBeNull();
+    expect(wallView(p, proposal.wall)).not.toBeNull();
+    const mid = junctionPos(p.solution, "k.south.j")!;
+    expect(mid.x).toBeCloseTo(IN("6'"), 1);
+    expect(mid.y).toBeCloseTo(0, 1);
+    // Stubs meet at mid; their lengths sum to original width
+    const a = wallView(p, "k.south")!.lengthInches;
+    const b = wallView(p, "k.south.b")!.lengthInches;
+    expect(a + b).toBeCloseTo(IN("12'"), 1);
+  });
+
+  test("T-join then delete the mid host segment opens the expansion", () => {
+    // Two T-joins on k.south at 4' and 8', with a U of walls south of them.
+    // Then delete the middle host segment (k.south between the two mids) —
+    // after sequential splits the middle piece is the residual between mids.
+    let project = loadProject({ "asbuilt.abl": BASE });
+    // First stem at 4'
+    let prop = proposeAddWall(project, "asbuilt", {
+      a: { onWall: "k.south", x: s64FromFeet(4), y: 0 },
+      b: { x: s64FromFeet(4), y: s64FromFeet(-5) },
+      wallType: "int_2x4",
+      axis: "v",
+    });
+    project = applyEdits(project, prop.edits);
+    const jWest = prop.junctions[0]!;
+    // Second stem at 8' — host is now split; the eastern stub still covers x=8'
+    // Find which wall contains x=8': after first split, k.south is 0→4, k.south.b is 4→12
+    prop = proposeAddWall(project, "asbuilt", {
+      a: { onWall: "k.south.b", x: s64FromFeet(8), y: 0 },
+      b: { x: s64FromFeet(8), y: s64FromFeet(-5) },
+      wallType: "int_2x4",
+      axis: "v",
+    });
+    project = applyEdits(project, prop.edits);
+    const jEast = prop.junctions[0]!;
+    // After second split of k.south.b: k.south.b is 4→8, k.south.b.b is 8→12
+    // Delete the middle segment k.south.b (between the two T-joins)
+    project = applyEdits(project, proposeDelete(project, "asbuilt", "k.south.b"));
+    const p = resolveAndSolve(layerMap(project), "asbuilt");
+    expect(p.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    expect(p.resolved.effective.has("k.south.b")).toBe(false);
+    // Outer stubs remain
+    expect(wallView(p, "k.south")).not.toBeNull(); // 0→4
+    expect(wallView(p, "k.south.b.b") ?? wallView(p, "k.south.b1")).toBeTruthy();
+    // Both T junctions still exist
+    expect(junctionPos(p.solution, jWest)).not.toBeNull();
+    expect(junctionPos(p.solution, jEast)).not.toBeNull();
+  });
+});
+
+describe("proposeSplitWall", () => {
+  test("splits a free wall and rehosts an opening onto the right stub", () => {
+    const src = `layer asbuilt
+
+walltype int_2x4 { thickness: 4 1/2" }
+
+junction a ~(0", 0")
+junction b ~(12'-0", 0")
+
+wall w1 { from: a, to: b, type: int_2x4 }
+
+axis w1 h
+
+door d1 { in: w1, at: 1'-0" from a, size: 2'-8" x 6'-8" }
+`;
+    const project = loadProject({ "asbuilt.abl": src });
+    // Split at 8' — door center is at 1'+1.333 ≈ 2.3', so stays on west stub
+    const split = proposeSplitWall(project, "asbuilt", "w1", {
+      x: s64FromFeet(8),
+      y: 0,
+    });
+    const next = applyEdits(project, split.edits);
+    const p = resolveAndSolve(layerMap(next), "asbuilt");
+    expect(p.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    const door = p.resolved.effective.get("d1");
+    expect(door?.stmt.kind).toBe("opening");
+    if (door?.stmt.kind === "opening") {
+      expect(door.stmt.wall).toBe("w1"); // west stub reuses host name
+      expect(door.stmt.anchor).toBe("a");
+    }
+    expect(wallView(p, "w1")!.lengthInches).toBeCloseTo(IN("8'"), 1);
+    expect(wallView(p, split.wallB)!.lengthInches).toBeCloseTo(IN("4'"), 1);
+  });
+
+  test("refuses a split too close to an endpoint", () => {
+    const project = loadProject({ "asbuilt.abl": BASE });
+    expect(() =>
+      proposeSplitWall(project, "asbuilt", "k.south", {
+        x: s64FromInches(1),
+        y: 0,
+      }),
+    ).toThrow(/too close/);
+  });
 });
 
 describe("proposeDelete", () => {
@@ -124,13 +243,47 @@ describe("proposeDelete", () => {
     });
     const project = applyEdits(project0, add.edits);
     const edits = proposeDelete(project, "asbuilt", "w1");
-    // wall + axis lines blanked, no tombstones
-    expect(edits.every((e) => e.kind === "replace-line")).toBe(true);
+    // wall + axis blanked (plus any bake rewrites); no tombstones required
+    expect(edits.some((e) => e.kind === "replace-line" && e.newText === "")).toBe(true);
     const next = applyEdits(project, edits);
     const p = resolveAndSolve(layerMap(next), "asbuilt");
     expect(p.resolved.effective.has("w1")).toBe(false);
     expect(p.resolved.effective.has("w1.axis")).toBe(false);
     expect(p.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+  });
+
+  test("deleting a wall does not drift other junctions (bake solved pose)", () => {
+    // Free wall with sketch at 12' but hard length 10' → solved b is at 10',
+    // sketch still 12'. A sibling free wall shares junction a. Deleting the
+    // sibling used to let soft sketch pull b back toward 12'; baking pins it.
+    const src = `layer asbuilt
+
+walltype int_2x4 { thickness: 4 1/2" }
+
+junction a ~(0", 0")
+junction b ~(12'-0", 0")
+junction c ~(0", 6'-0")
+
+wall w1 { from: a, to: b, type: int_2x4 }
+wall w2 { from: a, to: c, type: int_2x4 }
+
+axis w1 h
+axis w2 v
+
+length(w1) = 10'-0"
+`;
+    let project = loadProject({ "asbuilt.abl": src });
+    const before = resolveAndSolve(layerMap(project), "asbuilt");
+    const bBefore = junctionPos(before.solution, "b")!;
+    expect(bBefore.x).toBeCloseTo(IN("10'"), 1); // hard length wins over sketch
+
+    project = applyEdits(project, proposeDelete(project, "asbuilt", "w2"));
+    const after = resolveAndSolve(layerMap(project), "asbuilt");
+    const bAfter = junctionPos(after.solution, "b")!;
+    expect(bAfter.x).toBeCloseTo(bBefore.x, 1);
+    expect(bAfter.y).toBeCloseTo(bBefore.y, 1);
+    // Bake rewrote b's sketch to the solved 10' so soft regularizer agrees.
+    expect(project.files.get("asbuilt.abl")).toMatch(/junction b ~\(10'-0", 0"\)/);
   });
 
   test("template-expanded wall: tombstoned, with its bindings", () => {
