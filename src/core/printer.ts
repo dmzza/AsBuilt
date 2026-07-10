@@ -1,4 +1,5 @@
 import type { Expr, ParsedLayer, Point, Stmt } from "./ast";
+import { formatFaceRef } from "./faces";
 import { formatLength } from "./units";
 
 /**
@@ -56,8 +57,15 @@ export function printStmt(s: Stmt): string {
   switch (s.kind) {
     case "layer":
       return s.parent === null ? `layer ${s.name}` : `layer ${s.name} : ${s.parent}`;
-    case "walltype":
-      return `walltype ${s.name} { thickness: ${formatLength(s.thickness)} }`;
+    case "walltype": {
+      // Omitting [approximated] keeps legacy files byte-stable; only print
+      // non-default provenance (or a date) explicitly.
+      const th =
+        s.prov === "approximated" && s.date === undefined
+          ? formatLength(s.thickness)
+          : `${formatLength(s.thickness)} ${printProv(s.prov, s.date)}`;
+      return `walltype ${s.name} { thickness: ${th} }`;
+    }
     case "param":
       return `param ${s.name} = ${formatLength(s.value)} ${printProv(s.prov, s.date)}`;
     case "set": {
@@ -74,6 +82,9 @@ export function printStmt(s: Stmt): string {
       if (s.walls !== undefined) opts.push(`walls: ${s.walls}`);
       if (s.height !== undefined) {
         opts.push(`height: ${formatLength(s.height.value)} ${printProv(s.height.prov)}`);
+      }
+      if (s.dims !== undefined && s.dims !== "centerline") {
+        opts.push(`dims: ${s.dims}`);
       }
       const block = opts.length > 0 ? ` { ${opts.join(", ")} }` : "";
       return `room ${s.name} : rect(${printExpr(s.width)}, ${printExpr(s.depth)})${block}`;
@@ -100,7 +111,9 @@ export function printStmt(s: Stmt): string {
       return `length(${s.wall}) = ${printExpr(s.expr)}`;
     case "meas": {
       const prov = printProv("measured", s.date);
-      return `meas ${s.name} : dist(${s.a}, ${s.b}) = ${formatLength(s.value)} ${prov}`;
+      const ref =
+        s.ref !== undefined ? ` { ref: ${formatFaceRef(s.ref)} }` : "";
+      return `meas ${s.name} : dist(${s.a}, ${s.b}) = ${formatLength(s.value)} ${prov}${ref}`;
     }
     case "space":
       return `space ${s.name} { at: ${printPoint(s.at)} }`;

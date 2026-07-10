@@ -61,7 +61,13 @@ function addWallMeshes(
   const elevOf = elevLookup(pipeline);
   const thickness = new Map<string, number>();
   for (const [key, eff] of pipeline.resolved.effective) {
-    if (eff.stmt.kind === "walltype") thickness.set(key, eff.stmt.thickness / 64);
+    if (eff.stmt.kind !== "walltype") continue;
+    // Prefer solved thickness (may drift from authored when face tapes derive it).
+    const i = pipeline.solution.system.varIndex.get(`t:${key}`);
+    thickness.set(
+      key,
+      i !== undefined ? pipeline.solution.x[i]! : eff.stmt.thickness / 64,
+    );
   }
   const opensByWall = new Map<string, ReturnType<typeof openingViews>>();
   for (const o of openingViews(pipeline)) {

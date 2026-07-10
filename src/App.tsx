@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "
 import {
   allParams,
   allWallGrades,
+  allWallTypes,
+  defaultMeasureRef,
   exprRefs,
   formatLength,
   junctionPos,
@@ -21,6 +23,7 @@ import {
   proposeSetWallType,
   wallView,
   type Diagnostic,
+  type FaceEnd,
   type Grade,
   type Pipeline,
   type Provenance,
@@ -493,8 +496,13 @@ function useTitleRows(): TitleRow[] {
   const level = useApp((s) => s.level);
   if (pipeline === null || project === null) return [];
   const params = allParams(pipeline);
-  const measured = params.filter((p) => p.prov === "measured").length;
-  const toMeasure = params.filter((p) => p.prov === "approximated").length;
+  const wallTypes = allWallTypes(pipeline);
+  const measured =
+    params.filter((p) => p.prov === "measured").length +
+    wallTypes.filter((t) => t.prov === "measured").length;
+  const toMeasure =
+    params.filter((p) => p.prov === "approximated").length +
+    wallTypes.filter((t) => t.prov === "approximated").length;
   const conflicts = pipeline.solution.contradictions.length;
   const parent = project.layers.get(branch)?.parsed.header.parent ?? null;
   const levels = levelViews(pipeline);
@@ -645,7 +653,7 @@ function WallPanel({ selection }: { selection: string }): JSX.Element | null {
   return (
     <div className="panel">
       <h3>Wall {selection}</h3>
-      <Prop label="Length" refs={[selection]}>
+      <Prop label="Centerline" refs={[selection]}>
         {boundParam !== null ? (
           <LengthField
             inches={w.lengthInches}
@@ -677,6 +685,12 @@ function WallPanel({ selection }: { selection: string }): JSX.Element | null {
           <span className="ro">{fmt16(w.lengthInches)}</span>
         )}
         {g !== undefined && <GradeChip grade={g.grade} />}
+      </Prop>
+      <Prop label="Inner" refs={[selection]}>
+        <span className="ro mono">{fmt16(w.faces.inner)}</span>
+      </Prop>
+      <Prop label="Outer" refs={[selection]}>
+        <span className="ro mono">{fmt16(w.faces.outer)}</span>
       </Prop>
       <Prop label="Type">
         <select
@@ -712,14 +726,15 @@ function WallPanel({ selection }: { selection: string }): JSX.Element | null {
       </Prop>
       <div className="panel-actions">
         <button
-          onClick={(e) =>
+          onClick={(e) => {
+            const face = defaultMeasureRef(pipeline, { wall: selection });
             openEditor({
-              target: { kind: "measure-wall", wall: selection },
+              target: { kind: "measure-wall", wall: selection, face },
               anchor: { x: e.clientX, y: e.clientY },
               initial: "",
               label: `Measured ${selection}`,
-            })
-          }
+            });
+          }}
         >
           Record measurement
         </button>
@@ -1108,13 +1123,16 @@ function ParamsPanel(): JSX.Element | null {
   const openEditor = useApp((s) => s.openEditor);
   if (pipeline === null || project === null) return null;
   const params = allParams(pipeline);
-  const audit = params.filter((p) => p.prov === "approximated");
+  const wallTypes = allWallTypes(pipeline);
+  const audit =
+    params.filter((p) => p.prov === "approximated").length +
+    wallTypes.filter((t) => t.prov === "approximated").length;
 
   return (
     <div className="panel">
       <h3>
         Dimensions{" "}
-        {audit.length > 0 && <span className="audit-badge">{audit.length} to measure</span>}
+        {audit > 0 && <span className="audit-badge">{audit} to measure</span>}
       </h3>
       <table className="params">
         <tbody>
@@ -1182,6 +1200,30 @@ function ParamsPanel(): JSX.Element | null {
                   </button>
                 )}
               </td>
+            </tr>
+          ))}
+          {wallTypes.map((t) => (
+            <tr
+              key={`wt:${t.name}`}
+              className={t.prov === "approximated" ? "row-audit" : ""}
+              title="Wall assembly thickness — measure with calipers / known stock"
+            >
+              <td className="param-name">{t.name}.th</td>
+              <td className="param-value">
+                <span className="ro mono">{fmt16(t.solvedInches)}</span>
+                {Math.abs(t.solvedInches - t.authoredInches) > 1 / 32 && (
+                  <span
+                    className="drift"
+                    title={`authored ${formatLength(Math.round(t.authoredInches * 64))}`}
+                  >
+                    *
+                  </span>
+                )}
+              </td>
+              <td>
+                <GradeChip grade={t.prov} />
+              </td>
+              <td className="param-actions" />
             </tr>
           ))}
         </tbody>
@@ -1265,6 +1307,19 @@ function SuspectRow({ suspect }: { suspect: string }): JSX.Element | null {
           >
             → approx
           </button>
+        </span>
+      </div>
+    );
+  }
+
+  if (s.kind === "walltype") {
+    // Thickness joined the contradiction via face residuals. Demote/remove
+    // aren't free-form thickness edits yet (M8 catalog editor); surface why.
+    return (
+      <div className="suspect-row" {...rowHover}>
+        <span className="suspect-name">
+          {suspect} thickness = {formatLength(s.thickness)}{" "}
+          <em>({s.prov} — face tapes disagree with this assembly)</em>
         </span>
       </div>
     );
@@ -1408,6 +1463,7 @@ function ValueEditor(): JSX.Element | null {
   const commitEditor = useApp((s) => s.commitEditor);
   const closeEditor = useApp((s) => s.closeEditor);
   const previewEditorValue = useApp((s) => s.previewEditorValue);
+  const openEditor = useApp((s) => s.openEditor);
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -1424,12 +1480,40 @@ function ValueEditor(): JSX.Element | null {
   }, [editor]);
 
   if (editor === null) return null;
-  const left = Math.min(editor.anchor.x, window.innerWidth - 240);
-  const top = Math.min(editor.anchor.y + 8, window.innerHeight - 90);
+  const left = Math.min(editor.anchor.x, window.innerWidth - 260);
+  const top = Math.min(editor.anchor.y + 8, window.innerHeight - 140);
+  const measureTarget =
+    editor.target.kind === "measure-wall" || editor.target.kind === "measure-pair"
+      ? editor.target
+      : null;
+  const face: FaceEnd | null = measureTarget?.face ?? null;
+
+  const setFace = (next: FaceEnd): void => {
+    if (measureTarget === null) return;
+    openEditor({
+      ...editor,
+      target: { ...measureTarget, face: next },
+    });
+    if (text.trim().length > 0) previewEditorValue(text);
+  };
 
   return (
     <div className="value-editor" style={{ left, top }}>
       <div className="value-editor-label">{editor.label}</div>
+      {face !== null && (
+        <div className="face-ref-row" role="group" aria-label="Tape reference">
+          {(["inner", "centerline", "outer"] as FaceEnd[]).map((f) => (
+            <button
+              key={f}
+              type="button"
+              className={face === f ? "face-ref active" : "face-ref"}
+              onClick={() => setFace(f)}
+            >
+              {f === "centerline" ? "CL" : f}
+            </button>
+          ))}
+        </div>
+      )}
       <input
         ref={inputRef}
         value={text}
@@ -1450,7 +1534,11 @@ function ValueEditor(): JSX.Element | null {
         }}
       />
       {error !== null && <div className="value-editor-error">{error}</div>}
-      <div className="value-editor-hint">Enter to apply · Esc to cancel</div>
+      <div className="value-editor-hint">
+        {face !== null
+          ? `ref: ${face} · Enter to apply · Esc to cancel`
+          : "Enter to apply · Esc to cancel"}
+      </div>
     </div>
   );
 }

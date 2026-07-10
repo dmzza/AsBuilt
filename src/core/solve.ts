@@ -1,16 +1,28 @@
-import type { Provenance } from "./ast";
+import type { DimRef, FaceRef, Provenance } from "./ast";
+import { crossingWallType, faceSign, wallBetween } from "./faces";
 import { evalExpr, type EffStmt, type Resolved } from "./merge";
 import { s64ToInches } from "./units";
 
 /**
- * Weighted nonlinear least squares over junction coordinates and param values.
- * All work in float inches. Hard constraints are big-weight soft constraints;
- * a violated hard constraint after convergence is a contradiction.
+ * Weighted nonlinear least squares over junction coordinates, param values,
+ * and walltype thicknesses. All work in float inches. Hard constraints are
+ * big-weight soft constraints; a violated hard constraint after convergence
+ * is a contradiction.
+ *
+ * Face-referenced measurements desugar against centerline space:
+ *   M = C + eA·½tA + eB·½tB   (e = −1 inner / 0 centerline / +1 outer)
  */
 
 export const W_HARD = 1e3; // structural: axis alignment, length bindings, meas
 export const W_MEASURED_PARAM = 1e3;
-export const W_SOFT_PARAM = 1; // approximated / designed targets
+export const W_SOFT_PARAM = 1; // approximated / designed param targets
+/**
+ * Soft walltype thickness. Must be ≫ W_SOFT_PARAM so a hard face tape moves
+ * free params rather than "splitting the difference" with catalog thickness
+ * (which collapsed 4½" stud walls to ~2¼" under equal soft weights).
+ * Still soft (hard:false) so dual face reads (inner+outer) can derive true t.
+ */
+export const W_SOFT_THICKNESS = 100;
 export const W_SKETCH = 1e-2; // drawn positions (gauge regularizer)
 export const W_ANCHOR = 10; // translation gauge anchor (see anchors set)
 
@@ -28,12 +40,14 @@ export interface Residual {
 }
 
 export interface System {
-  /** Variable names: `j:<name>:x|y` or `p:<name>`. */
+  /** Variable names: `j:<name>:x|y`, `p:<name>`, or `t:<walltype>`. */
   varNames: string[];
   varIndex: Map<string, number>;
   x0: Float64Array;
   residuals: Residual[];
   paramProv: Map<string, Provenance>;
+  /** Thickness provenance keyed by walltype name. */
+  thicknessProv: Map<string, Provenance>;
 }
 
 export interface Contradiction {
@@ -69,6 +83,7 @@ export function buildSystem(resolved: Resolved, opts: BuildOptions = {}): System
   const x0: number[] = [];
   const residuals: Residual[] = [];
   const paramProv = new Map<string, Provenance>();
+  const thicknessProv = new Map<string, Provenance>();
 
   const addVar = (name: string, init: number): number => {
     const i = varNames.length;
@@ -114,11 +129,54 @@ export function buildSystem(resolved: Resolved, opts: BuildOptions = {}): System
         vars: [pi],
         fn: (x) => x[pi]! - target,
       });
+    } else if (s.kind === "walltype") {
+      // Thickness is a solver target: hard when measured, stiff-soft otherwise.
+      // Override key is the walltype name (same as statement key).
+      const target = opts.targetOverride?.get(key) ?? s64ToInches(s.thickness);
+      const ti = addVar(`t:${key}`, target);
+      thicknessProv.set(key, s.prov);
+      const hard = s.prov === "measured";
+      const w = hard ? W_MEASURED_PARAM : W_SOFT_THICKNESS;
+      residuals.push({
+        key,
+        hard,
+        weight: w,
+        vars: [ti],
+        fn: (x) => x[ti]! - target,
+      });
     }
   }
 
   const jVar = (name: string, axis: "x" | "y"): number | null =>
     varIndex.get(`j:${name}:${axis}`) ?? null;
+
+  const tVar = (wallType: string): number | null =>
+    varIndex.get(`t:${wallType}`) ?? null;
+
+  /** Room dims for a wall expanded from a rect template. */
+  const roomDimsOf = (wallName: string): DimRef => {
+    const wallEff = resolved.effective.get(wallName);
+    const roomName = wallEff?.expandedFrom;
+    if (roomName === undefined) return "centerline";
+    const room = resolved.effective.get(roomName);
+    if (room?.stmt.kind !== "room") return "centerline";
+    return room.stmt.dims ?? "centerline";
+  };
+
+  /**
+   * Crossing-thickness var indices at each end of a wall, for face residual
+   * terms. Returns null type → no contribution at that end.
+   */
+  const endThickness = (
+    junction: string,
+    spanWall: string | null,
+    end: "inner" | "outer" | "centerline",
+  ): { type: string | null; ti: number | null; sign: -1 | 0 | 1 } => {
+    const sign = faceSign(end);
+    if (sign === 0) return { type: null, ti: null, sign: 0 };
+    const type = crossingWallType(resolved, junction, spanWall);
+    return { type, ti: type !== null ? tVar(type) : null, sign };
+  };
 
   // Constraint residuals
   for (const [key, eff] of resolved.effective) {
@@ -160,17 +218,44 @@ export function buildSystem(resolved: Resolved, opts: BuildOptions = {}): System
           termVars.push(i);
         }
       }
+
+      // dims:inner on the parent room: param is clear interior, so
+      // C = expr + ½tA + ½tB  (residual C − expr − ½tA − ½tB).
+      // dims:outer: C = expr − ½tA − ½tB.
+      const dims = roomDimsOf(s.wall);
+      const faceEnd: FaceRef | undefined =
+        dims === "inner"
+          ? { a: "inner", b: "inner" }
+          : dims === "outer"
+            ? { a: "outer", b: "outer" }
+            : undefined;
+      // For dims, the residual uses opposite signs of the meas convention:
+      // meas: C + e·½t − M = 0 with e_inner = −1 → C − ½t − M = 0.
+      // length with dims:inner: C − (param + ½t) = 0 → C − param − ½t = 0.
+      // So dims:inner adds −½t (same as meas e=−1 with target = expr).
+      const endA = endThickness(from, s.wall, faceEnd?.a ?? "centerline");
+      const endB = endThickness(to, s.wall, faceEnd?.b ?? "centerline");
+      // dims sign: for inner, we want −½t on each end (param is smaller than C);
+      // endThickness with "inner" gives e=−1, and we use e·½t in residual below
+      // with form C + e·½t − expr. For e=−1: C − ½t − expr. Correct.
+      // For outer e=+1: C + ½t − expr → C = expr − ½t. Correct (outer param > C).
+      if (endA.ti !== null) termVars.push(endA.ti);
+      if (endB.ti !== null) termVars.push(endB.ti);
+
       residuals.push({
         key,
         hard: true,
         weight: W_HARD,
-        vars: termVars,
+        vars: uniqVars(termVars),
         fn: (x) => {
           const dx = x[bxi]! - x[axi]!;
           const dy = x[byi]! - x[ayi]!;
           let expr = litSum;
           for (const r of refIdx) expr += r.sign * x[r.i]!;
-          return Math.hypot(dx, dy) - expr;
+          let face = 0;
+          if (endA.ti !== null) face += endA.sign * 0.5 * x[endA.ti]!;
+          if (endB.ti !== null) face += endB.sign * 0.5 * x[endB.ti]!;
+          return Math.hypot(dx, dy) + face - expr;
         },
       });
     } else if (s.kind === "stack") {
@@ -201,15 +286,27 @@ export function buildSystem(resolved: Resolved, opts: BuildOptions = {}): System
       const byi = jVar(s.b, "y");
       if (axi === null || ayi === null || bxi === null || byi === null) continue;
       const target = opts.targetOverride?.get(key) ?? s64ToInches(s.value);
+      const span = wallBetween(resolved, s.a, s.b);
+      const spanName = span?.name ?? null;
+      const ref = s.ref;
+      const endA = endThickness(s.a, spanName, ref?.a ?? "centerline");
+      const endB = endThickness(s.b, spanName, ref?.b ?? "centerline");
+      const termVars: number[] = [axi, ayi, bxi, byi];
+      if (endA.ti !== null) termVars.push(endA.ti);
+      if (endB.ti !== null) termVars.push(endB.ti);
+      // residual: C + eA·½tA + eB·½tB − M = 0
       residuals.push({
         key,
         hard: true,
         weight: W_HARD,
-        vars: [axi, ayi, bxi, byi],
+        vars: uniqVars(termVars),
         fn: (x) => {
           const dx = x[bxi]! - x[axi]!;
           const dy = x[byi]! - x[ayi]!;
-          return Math.hypot(dx, dy) - target;
+          let face = 0;
+          if (endA.ti !== null) face += endA.sign * 0.5 * x[endA.ti]!;
+          if (endB.ti !== null) face += endB.sign * 0.5 * x[endB.ti]!;
+          return Math.hypot(dx, dy) + face - target;
         },
       });
     }
@@ -221,7 +318,14 @@ export function buildSystem(resolved: Resolved, opts: BuildOptions = {}): System
     x0: Float64Array.from(x0),
     residuals,
     paramProv,
+    thicknessProv,
   };
+}
+
+/** Unique var indices — duplicates break numeric Jacobian assembly (double-count). */
+function uniqVars(vars: number[]): number[] {
+  if (vars.length <= 1) return vars;
+  return [...new Set(vars)];
 }
 
 /** Dense Gaussian elimination with partial pivoting. A is n x n row-major. */
@@ -435,6 +539,12 @@ export function junctionPos(
 /** Solved value of a param (inches). */
 export function paramValue(sol: Solution, name: string): number | null {
   const i = sol.system.varIndex.get(`p:${name}`);
+  return i === undefined ? null : sol.x[i]!;
+}
+
+/** Solved thickness of a walltype (inches). */
+export function thicknessValue(sol: Solution, wallType: string): number | null {
+  const i = sol.system.varIndex.get(`t:${wallType}`);
   return i === undefined ? null : sol.x[i]!;
 }
 

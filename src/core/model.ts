@@ -1,10 +1,16 @@
 import type { ParsedLayer, Provenance } from "./ast";
 import { evalExpr, resolve, type Diagnostic, type Resolved } from "./merge";
 import {
+  crossingWallType,
+  faceLengthsOfWall,
+  wallBetween,
+} from "./faces";
+import {
   buildSystem,
   junctionPos,
   paramValue,
   solve,
+  thicknessValue,
   type BuildOptions,
   type Solution,
 } from "./solve";
@@ -33,8 +39,13 @@ export interface WallView {
   to: string;
   a: { x: number; y: number };
   b: { x: number; y: number };
+  /** Centerline length (solver space). */
   lengthInches: number;
   wallType: string;
+  /** Face lengths derived from centerline + crossing half-thicknesses. */
+  faces: { inner: number; centerline: number; outer: number };
+  /** Crossing walltypes at each end (null when ambiguous / free end). */
+  endTypes: { from: string | null; to: string | null };
 }
 
 export interface ParamView {
@@ -132,7 +143,7 @@ export function resolveAndSolve(
 
 /**
  * Re-solve with one target statement's value shifted (inches), warm-started.
- * Works for params, set overrides, and meas statements.
+ * Works for params, set overrides, meas statements, and walltype thicknesses.
  */
 export function perturbTarget(
   pipeline: Pipeline,
@@ -142,10 +153,15 @@ export function perturbTarget(
 ): Solution {
   const eff = pipeline.resolved.effective.get(key);
   const s = eff?.stmt;
-  if (s === undefined || (s.kind !== "param" && s.kind !== "set" && s.kind !== "meas")) {
-    throw new Error(`perturbTarget: no param or meas "${key}"`);
+  if (s === undefined) throw new Error(`perturbTarget: no statement "${key}"`);
+  let base: number;
+  if (s.kind === "param" || s.kind === "set" || s.kind === "meas") {
+    base = s64ToInches(s.value);
+  } else if (s.kind === "walltype") {
+    base = s64ToInches(s.thickness);
+  } else {
+    throw new Error(`perturbTarget: no param, meas, or walltype "${key}"`);
   }
-  const base = s64ToInches(s.value);
   const system = buildSystem(pipeline.resolved, {
     ...extra,
     anchors: pipeline.anchors,
@@ -157,7 +173,10 @@ export function perturbTarget(
 /** Back-compat alias for param-only callers. */
 export const perturbParam = perturbTarget;
 
-/** Target statements that carry provenance: params/sets and meas (measured). */
+/**
+ * Target statements that carry provenance: params/sets, meas (measured), and
+ * walltype thicknesses (so derived grades weaken through approximated thickness).
+ */
 function supportTargets(pipeline: Pipeline): { key: string; grade: Grade }[] {
   const out: { key: string; grade: Grade }[] = [];
   for (const [key, eff] of pipeline.resolved.effective) {
@@ -165,6 +184,8 @@ function supportTargets(pipeline: Pipeline): { key: string; grade: Grade }[] {
       out.push({ key, grade: eff.stmt.prov });
     } else if (eff.stmt.kind === "meas") {
       out.push({ key, grade: "measured" });
+    } else if (eff.stmt.kind === "walltype") {
+      out.push({ key, grade: eff.stmt.prov });
     }
   }
   return out;
@@ -176,15 +197,85 @@ export function wallView(pipeline: Pipeline, name: string): WallView | null {
   const a = junctionPos(pipeline.solution, eff.stmt.from);
   const b = junctionPos(pipeline.solution, eff.stmt.to);
   if (a === null || b === null) return null;
+  const lengthInches = Math.hypot(b.x - a.x, b.y - a.y);
+  const typeFrom = crossingWallType(pipeline.resolved, eff.stmt.from, name);
+  const typeTo = crossingWallType(pipeline.resolved, eff.stmt.to, name);
+  const half = (type: string | null): number => {
+    if (type === null) return 0;
+    const t = thicknessValue(pipeline.solution, type);
+    return t === null ? 0 : t / 2;
+  };
   return {
     name,
     from: eff.stmt.from,
     to: eff.stmt.to,
     a,
     b,
-    lengthInches: Math.hypot(b.x - a.x, b.y - a.y),
+    lengthInches,
     wallType: eff.stmt.wallType,
+    faces: faceLengthsOfWall(lengthInches, half(typeFrom), half(typeTo)),
+    endTypes: { from: typeFrom, to: typeTo },
   };
+}
+
+/** All walltypes with authored + solved thickness (for audit / inspector). */
+export interface WallTypeView {
+  name: string;
+  authoredInches: number;
+  solvedInches: number;
+  prov: import("./ast").Provenance;
+  layer: string;
+}
+
+export function allWallTypes(pipeline: Pipeline): WallTypeView[] {
+  const out: WallTypeView[] = [];
+  for (const [key, eff] of pipeline.resolved.effective) {
+    if (eff.stmt.kind !== "walltype") continue;
+    const solved = thicknessValue(pipeline.solution, key);
+    out.push({
+      name: key,
+      authoredInches: s64ToInches(eff.stmt.thickness),
+      solvedInches: solved ?? s64ToInches(eff.stmt.thickness),
+      prov: eff.stmt.prov,
+      layer: eff.layer,
+    });
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Default tape face for the measure tool.
+ *
+ * Only rooms authored with `dims: inner` (or `outer`) treat their params as
+ * face dimensions — those get a matching measure default. Everything else in
+ * this codebase is centerline-canonical (rect defaults, length bindings, the
+ * demo, examples), so defaulting every room wall to `inner` was off by a full
+ * wall thickness and silently corrupted geometry.
+ */
+export function defaultMeasureRef(
+  pipeline: Pipeline,
+  target: { wall: string } | { a: string; b: string },
+): import("./ast").FaceEnd {
+  const roomDims = (wallName: string): import("./ast").DimRef | undefined => {
+    const wallEff = pipeline.resolved.effective.get(wallName);
+    const roomName = wallEff?.expandedFrom;
+    if (roomName === undefined) return undefined;
+    const room = pipeline.resolved.effective.get(roomName);
+    if (room?.stmt.kind !== "room") return undefined;
+    return room.stmt.dims ?? "centerline";
+  };
+
+  let wallName: string | null = null;
+  if ("wall" in target) wallName = target.wall;
+  else {
+    const span = wallBetween(pipeline.resolved, target.a, target.b);
+    wallName = span?.name ?? null;
+  }
+  if (wallName !== null) {
+    const dims = roomDims(wallName);
+    if (dims === "inner" || dims === "outer") return dims;
+  }
+  return "centerline";
 }
 
 export function paramView(pipeline: Pipeline, name: string): ParamView | null {

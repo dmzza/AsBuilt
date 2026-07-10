@@ -81,10 +81,11 @@ describe("app smoke (jsdom)", () => {
       root.render(<App />);
     });
 
-    // measure the kitchen north wall (bound to k.width) through the editor
+    // measure the kitchen north wall (bound to k.width) through the editor.
+    // Centerline ref still promotes the param; face refs append a meas (M7).
     await act(async () => {
       useApp.getState().openEditor({
-        target: { kind: "measure-wall", wall: "k.north" },
+        target: { kind: "measure-wall", wall: "k.north", face: "centerline" },
         anchor: { x: 100, y: 100 },
         initial: "",
         label: "Measured k.north",
@@ -119,7 +120,7 @@ describe("app smoke (jsdom)", () => {
     await act(async () => {
       useApp.getState().closeEditor();
       useApp.getState().openEditor({
-        target: { kind: "measure-pair", a: "k.sw", b: "k.ne" },
+        target: { kind: "measure-pair", a: "k.sw", b: "k.ne", face: "centerline" },
         anchor: { x: 100, y: 100 },
         initial: "",
         label: "diag",

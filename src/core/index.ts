@@ -8,6 +8,17 @@
 
 export * from "./units";
 export * from "./ast";
+export {
+  faceSign,
+  isCenterlineRef,
+  normalizeFaceRef,
+  parseFaceRefText,
+  formatFaceRef,
+  wallBetween,
+  crossingWallType,
+  faceLengthsOfWall,
+  faceMeasureEndpoints,
+} from "./faces";
 export { parseLayerFile, parseExpr } from "./parser";
 export { printLayerFile, printStmt, printExpr } from "./printer";
 export {
@@ -25,6 +36,7 @@ export {
   solve,
   junctionPos,
   paramValue,
+  thicknessValue,
   CONTRADICTION_TOL,
   type BuildOptions,
   type Contradiction,
@@ -39,6 +51,8 @@ export {
   wallView,
   paramView,
   allParams,
+  allWallTypes,
+  defaultMeasureRef,
   derivedGrade,
   wallLengthGrade,
   allWallGrades,
@@ -55,6 +69,7 @@ export {
   type OpeningView,
   type ParamView,
   type Pipeline,
+  type WallTypeView,
   type WallView,
 } from "./model";
 export {

@@ -1,6 +1,8 @@
 import {
   stmtKey,
   type AxisStmt,
+  type FaceEnd,
+  type FaceRef,
   type FixtureStmt,
   type JunctionStmt,
   type MeasStmt,
@@ -12,6 +14,7 @@ import {
   type SetStmt,
   type WallStmt,
 } from "./ast";
+import { normalizeFaceRef } from "./faces";
 import { resolve } from "./merge";
 import { perturbParam, resolveAndSolve, type Pipeline } from "./model";
 import { parseLayerFile } from "./parser";
@@ -506,10 +509,16 @@ export function proposeDelete(project: Project, branch: string, key: string): Te
 export type MeasureTarget = { wall: string } | { a: string; b: string };
 
 /**
- * Record a tape measurement. Measuring a wall whose length is bound to a
- * single param makes THAT param measured (define-once: no duplicate truth).
- * Anything else — unbound walls, diagonals, cross-room spans — appends a
- * `meas` distance constraint between the two junctions.
+ * Record a tape measurement.
+ *
+ * **Centerline** (default, or `ref: centerline`): measuring a wall whose length
+ * is bound to a single param promotes THAT param to measured (define-once).
+ * Anything else appends a `meas`.
+ *
+ * **Face-referenced** (`inner` / `outer` / mixed ends): NEVER freezes a derived
+ * centerline into a param — that would bake a thickness assumption into a
+ * "measured" value nobody taped. Always appends a `meas` with `{ ref: … }`;
+ * the solver owns centerline via the face residual + thickness targets.
  */
 export function proposeMeasure(
   project: Project,
@@ -517,18 +526,23 @@ export function proposeMeasure(
   target: MeasureTarget,
   value: S64,
   date?: string,
+  ref?: FaceEnd | FaceRef,
 ): TextEdit[] {
+  const face = normalizeFaceRef(ref);
   const pipeline = resolveAndSolve(layerMap(project), branch);
   let pair: { a: string; b: string };
   if ("wall" in target) {
     const wallEff = pipeline.resolved.effective.get(target.wall);
     if (wallEff?.stmt.kind !== "wall") throw new Error(`no wall "${target.wall}"`);
-    const binding = pipeline.resolved.effective.get(`${target.wall}.length`);
-    if (binding?.stmt.kind === "length") {
-      const terms = binding.stmt.expr.terms;
-      const first = terms[0];
-      if (terms.length === 1 && first !== undefined && first.kind === "ref" && first.sign === 1) {
-        return proposeSetParam(project, branch, first.name, value, "measured", date);
+    // Param promotion only for centerline reads of a single-param binding.
+    if (face === undefined) {
+      const binding = pipeline.resolved.effective.get(`${target.wall}.length`);
+      if (binding?.stmt.kind === "length") {
+        const terms = binding.stmt.expr.terms;
+        const first = terms[0];
+        if (terms.length === 1 && first !== undefined && first.kind === "ref" && first.sign === 1) {
+          return proposeSetParam(project, branch, first.name, value, "measured", date);
+        }
       }
     }
     pair = { a: wallEff.stmt.from, b: wallEff.stmt.to };
@@ -543,6 +557,7 @@ export function proposeMeasure(
     b: pair.b,
     value,
     date,
+    ref: face,
     loc: { file: "", line: 0 },
     leadingComments: [],
   };
