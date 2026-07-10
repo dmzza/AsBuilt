@@ -12,6 +12,7 @@ import { formatLength } from "./units";
 
 const KIND_ORDER: Stmt["kind"][] = [
   "walltype",
+  "level",
   "param",
   "set",
   "junction",
@@ -22,7 +23,9 @@ const KIND_ORDER: Stmt["kind"][] = [
   "axis",
   "length",
   "meas",
+  "stack",
   "fixture",
+  "void",
   "space",
   "delete",
 ];
@@ -101,6 +104,15 @@ export function printStmt(s: Stmt): string {
     }
     case "space":
       return `space ${s.name} { at: ${printPoint(s.at)} }`;
+    case "level":
+      return `level ${s.ns}.* { elev: ${formatLength(s.elev)} ${printProv(s.prov)} }`;
+    case "stack":
+      return `stack ${s.a} on ${s.b}`;
+    case "void":
+      return (
+        `void ${s.name} { at: ${printPoint(s.at)}, ` +
+        `size: ${formatLength(s.w)} x ${formatLength(s.d)} }`
+      );
     case "delete":
       return `delete ${s.target}`;
   }
@@ -138,6 +150,10 @@ function sortName(s: Stmt): string {
       return s.target;
     case "rectilinear":
       return s.ns;
+    case "level":
+      return s.ns;
+    case "stack":
+      return s.a;
     case "layer":
       return "";
     default:

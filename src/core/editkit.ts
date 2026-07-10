@@ -309,6 +309,8 @@ export function proposeAddWall(
     b: WallEndpoint;
     wallType: string;
     axis?: "h" | "v";
+    /** Level namespace: names are generated under `<ns>.` (drawn on that level). */
+    ns?: string;
   },
 ): AddWallProposal {
   const file = project.layers.get(branch);
@@ -317,16 +319,19 @@ export function proposeAddWall(
   const created: string[] = [];
   const junctionNames: string[] = [];
   let counter = 0;
+  const p = args.ns !== undefined ? `${args.ns}.` : "";
+  const jPrefix = `${p}j`;
+  const wPrefix = `${p}w`;
 
   for (const end of [args.a, args.b]) {
     if ("existing" in end) {
       junctionNames.push(end.existing);
     } else {
       // genName scans authored statements only; bump past what we just made
-      let name = genName(project, "j");
+      let name = genName(project, jPrefix);
       while (created.includes(name)) {
         counter += 1;
-        name = `j${parseInt(name.slice(1), 10) + counter}`;
+        name = `${jPrefix}${parseInt(name.slice(jPrefix.length), 10) + counter}`;
       }
       created.push(name);
       junctionNames.push(name);
@@ -341,8 +346,10 @@ export function proposeAddWall(
     }
   }
 
-  let wallName = genName(project, "w");
-  while (created.includes(wallName)) wallName = `w${parseInt(wallName.slice(1), 10) + 1}`;
+  let wallName = genName(project, wPrefix);
+  while (created.includes(wallName)) {
+    wallName = `${wPrefix}${parseInt(wallName.slice(wPrefix.length), 10) + 1}`;
+  }
   const wall: WallStmt = {
     kind: "wall",
     name: wallName,
@@ -559,9 +566,9 @@ export function proposeSetOpeningOffset(
 export function proposeAddFixture(
   project: Project,
   branch: string,
-  args: { at: Point; fixKind?: string; w?: S64; d?: S64 },
+  args: { at: Point; fixKind?: string; w?: S64; d?: S64; ns?: string },
 ): { edits: TextEdit[]; name: string } {
-  const name = genName(project, "f");
+  const name = genName(project, args.ns !== undefined ? `${args.ns}.f` : "f");
   const stmt: FixtureStmt = {
     kind: "fixture",
     name,

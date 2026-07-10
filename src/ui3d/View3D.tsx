@@ -1,7 +1,14 @@
 import { useEffect, useRef, type JSX } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { fixtureViews, junctionPos, openingViews, type Pipeline } from "../core";
+import {
+  fixtureViews,
+  junctionPos,
+  levelOfKey,
+  levelViews,
+  openingViews,
+  type Pipeline,
+} from "../core";
 import { useApp } from "../state/store";
 
 /**
@@ -36,11 +43,19 @@ function wallHeight(pipeline: Pipeline, wallKey: string): number {
   return DEFAULT_WALL_HEIGHT;
 }
 
+/** Elevation (inches) of a key, from the pipeline's level statements. */
+function elevLookup(pipeline: Pipeline): (key: string) => number {
+  const levels = levelViews(pipeline);
+  const byNs = new Map(levels.map((l) => [l.ns, l.elevInches]));
+  return (key) => byNs.get(levelOfKey(key, levels)) ?? 0;
+}
+
 function addWallMeshes(
   pipeline: Pipeline,
   group: THREE.Group,
   matFor: (key: string) => THREE.Material,
 ): void {
+  const elevOf = elevLookup(pipeline);
   const thickness = new Map<string, number>();
   for (const [key, eff] of pipeline.resolved.effective) {
     if (eff.stmt.kind === "walltype") thickness.set(key, eff.stmt.thickness / 64);
@@ -90,8 +105,62 @@ function addWallMeshes(
     const geo = new THREE.ExtrudeGeometry(shape, { depth: th, bevelEnabled: false });
     geo.translate(0, 0, -th / 2);
     const mesh = new THREE.Mesh(geo, matFor(key));
-    mesh.position.set(a.x, 0, -a.y);
+    mesh.position.set(a.x, elevOf(s.from), -a.y);
     mesh.rotation.y = Math.atan2((b.y - a.y) / len, (b.x - a.x) / len);
+    mesh.userData.key = key;
+    group.add(mesh);
+  }
+}
+
+const SLAB_T = 10; // floor structure depth, inches
+
+/** Floor slabs for elevated levels: one per rect room, voids cut through. */
+function addSlabs(pipeline: Pipeline, group: THREE.Group, mat: THREE.Material): void {
+  const levels = levelViews(pipeline);
+  const voids: { ns: string | null; x0: number; y0: number; x1: number; y1: number }[] = [];
+  for (const [key, eff] of pipeline.resolved.effective) {
+    if (eff.stmt.kind !== "void") continue;
+    const s = eff.stmt;
+    voids.push({
+      ns: levelOfKey(key, levels),
+      x0: s.at.x / 64,
+      y0: s.at.y / 64,
+      x1: s.at.x / 64 + s.w / 64,
+      y1: s.at.y / 64 + s.d / 64,
+    });
+  }
+  for (const [key, eff] of pipeline.resolved.effective) {
+    if (eff.stmt.kind !== "room") continue;
+    const ns = levelOfKey(key, levels);
+    const elev = levels.find((l) => l.ns === ns)?.elevInches ?? 0;
+    if (elev <= 0) continue;
+    const sw = junctionPos(pipeline.solution, `${key}.sw`);
+    const ne = junctionPos(pipeline.solution, `${key}.ne`);
+    if (sw === null || ne === null) continue;
+
+    const shape = new THREE.Shape();
+    shape.moveTo(sw.x, sw.y);
+    shape.lineTo(ne.x, sw.y);
+    shape.lineTo(ne.x, ne.y);
+    shape.lineTo(sw.x, ne.y);
+    shape.closePath();
+    for (const v of voids) {
+      if (v.ns !== ns) continue;
+      if (v.x1 <= sw.x || v.x0 >= ne.x || v.y1 <= sw.y || v.y0 >= ne.y) continue;
+      const hole = new THREE.Path();
+      hole.moveTo(v.x0, v.y0);
+      hole.lineTo(v.x1, v.y0);
+      hole.lineTo(v.x1, v.y1);
+      hole.lineTo(v.x0, v.y1);
+      hole.closePath();
+      shape.holes.push(hole);
+    }
+
+    const geo = new THREE.ExtrudeGeometry(shape, { depth: SLAB_T, bevelEnabled: false });
+    // plan (x, y) -> world (x, ·, -y); extrusion becomes height
+    geo.rotateX(-Math.PI / 2);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.y = elev - SLAB_T; // slab top carries the walls
     mesh.userData.key = key;
     group.add(mesh);
   }
@@ -102,14 +171,17 @@ function buildScene(pipeline: Pipeline, group: THREE.Group, selection: string | 
   const wallSelMat = new THREE.MeshStandardMaterial({ color: 0x93b4f8, roughness: 0.8 });
   const fixtureMat = new THREE.MeshStandardMaterial({ color: 0xaba79b, roughness: 0.7 });
   const fixtureSelMat = new THREE.MeshStandardMaterial({ color: 0x7c9cf0, roughness: 0.7 });
+  const slabMat = new THREE.MeshStandardMaterial({ color: 0xd6d1c4, roughness: 0.95 });
 
   addWallMeshes(pipeline, group, (key) => (selection === key ? wallSelMat : wallMat));
+  addSlabs(pipeline, group, slabMat);
 
+  const elevOf = elevLookup(pipeline);
   for (const f of fixtureViews(pipeline)) {
     const h = FIXTURE_HEIGHTS[f.fixKind] ?? 30;
     const geo = new THREE.BoxGeometry(f.w, h, f.d);
     const mesh = new THREE.Mesh(geo, selection === f.key ? fixtureSelMat : fixtureMat);
-    mesh.position.set(f.x, h / 2, -f.y);
+    mesh.position.set(f.x, elevOf(f.key) + h / 2, -f.y);
     mesh.rotation.y = (f.rot * Math.PI) / 180;
     mesh.userData.key = f.key;
     group.add(mesh);

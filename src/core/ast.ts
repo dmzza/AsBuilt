@@ -148,6 +148,43 @@ export interface SpaceStmt extends StmtBase {
   at: Point;
 }
 
+/**
+ * `level up.* { elev: 9'-1" [approximated] }` — everything keyed under `up.`
+ * sits at that elevation. Keys matching no level statement are the ground
+ * level at 0". Key is `<ns>.level`, so a concept re-authoring the line
+ * shadows the elevation.
+ */
+export interface LevelStmt extends StmtBase {
+  kind: "level";
+  ns: string;
+  elev: S64;
+  prov: Provenance;
+}
+
+/**
+ * `stack up.master.sw on lv.sw` — junction `a` bears directly over junction
+ * `b`: hard plan-coincidence (equal x, equal y) across levels.
+ */
+export interface StackStmt extends StmtBase {
+  kind: "stack";
+  /** `<a>.stack` */
+  name: string;
+  a: string;
+  b: string;
+}
+
+/**
+ * `void up.stairwell { at: ~(x, y), size: 3'-0" x 10'-0" }` — a floor
+ * opening (stairwell) cut from the slab of its key's level.
+ */
+export interface VoidStmt extends StmtBase {
+  kind: "void";
+  name: string;
+  at: Point;
+  w: S64;
+  d: S64;
+}
+
 export interface DeleteStmt extends StmtBase {
   kind: "delete";
   target: string;
@@ -182,6 +219,9 @@ export type Stmt =
   | LengthStmt
   | MeasStmt
   | SpaceStmt
+  | LevelStmt
+  | StackStmt
+  | VoidStmt
   | DeleteStmt;
 
 /**
@@ -201,13 +241,17 @@ export function stmtKey(s: Stmt): string | null {
     case "room":
     case "meas":
     case "space":
+    case "void":
       return s.name;
     case "set":
       return s.name; // shadows the param of the same name
     case "axis":
+    case "stack":
       return s.name;
     case "rectilinear":
       return `${s.ns}.rectilinear`;
+    case "level":
+      return `${s.ns}.level`;
     case "length":
       return `${s.wall}.length`;
     case "delete":

@@ -4,6 +4,7 @@ import {
   allWallGrades,
   formatLength,
   junctionPos,
+  levelViews,
   openingViews,
   parseLength,
   proposeDelete,
@@ -21,6 +22,7 @@ import {
   type S64,
   type TextEdit,
 } from "./core";
+import { exportPlanPng, type TitleRow } from "./export";
 import { fsAccessSupported } from "./persist";
 import { useApp, type Tool } from "./state/store";
 import { GRADE_COLORS, Plan2D } from "./ui2d/Plan2D";
@@ -343,6 +345,22 @@ function TopBar(): JSX.Element {
   const future = useApp((s) => s.future);
   const undo = useApp((s) => s.undo);
   const redo = useApp((s) => s.redo);
+  const branch = useApp((s) => s.branch);
+  const level = useApp((s) => s.level);
+  const viewMode = useApp((s) => s.viewMode);
+  const titleRows = useTitleRows();
+
+  const exportPng = (): void => {
+    const svg = document.querySelector<SVGSVGElement>("svg.plan");
+    if (svg === null) {
+      useApp.getState().showToast("No 2D sheet to export", "error");
+      return;
+    }
+    const name = `${branch}${level !== null ? `_${level}` : ""}_${today()}.png`;
+    void exportPlanPng(svg, titleRows, name).catch((e) =>
+      useApp.getState().showToast(`Export failed: ${(e as Error).message}`, "error"),
+    );
+  };
 
   const wallTypes = useMemo(() => {
     const out: string[] = [];
@@ -390,51 +408,88 @@ function TopBar(): JSX.Element {
         <button onClick={() => void saveAll()} disabled={dirtyCount === 0 || dirHandle === null}>
           Save{dirtyCount > 0 ? ` (${dirtyCount})` : ""}
         </button>
+        <button onClick={exportPng} disabled={viewMode === "3d"} title="Export the 2D sheet as PNG">
+          PNG
+        </button>
         <button onClick={loadDemo}>Demo</button>
       </div>
     </div>
   );
 }
 
-/** The sheet's title block: live project/sheet/survey state, drafting-style. */
-function TitleBlock(): JSX.Element | null {
+/** Title-block rows, shared by the on-screen block and the PNG export. */
+function useTitleRows(): TitleRow[] {
   const pipeline = useApp((s) => s.pipeline);
   const project = useApp((s) => s.project);
   const branch = useApp((s) => s.branch);
   const dirHandle = useApp((s) => s.dirHandle);
-  const viewMode = useApp((s) => s.viewMode);
-  if (pipeline === null || project === null || viewMode === "3d") return null;
-
+  const level = useApp((s) => s.level);
+  if (pipeline === null || project === null) return [];
   const params = allParams(pipeline);
   const measured = params.filter((p) => p.prov === "measured").length;
   const toMeasure = params.filter((p) => p.prov === "approximated").length;
   const conflicts = pipeline.solution.contradictions.length;
   const parent = project.layers.get(branch)?.parsed.header.parent ?? null;
+  const levels = levelViews(pipeline);
+  const rows: TitleRow[] = [
+    { label: "Project", value: dirHandle?.name ?? "demo (browser only)" },
+    { label: "Sheet", value: parent !== null ? `${branch} ← ${parent}` : branch },
+  ];
+  if (levels.length > 1) {
+    rows.push({ label: "Level", value: level ?? "ground" });
+  }
+  rows.push({ label: "Date", value: today() });
+  rows.push({
+    label: "Survey",
+    value:
+      `${measured} measured · ${toMeasure} to measure` +
+      (conflicts > 0 ? ` · ${conflicts} conflict${conflicts > 1 ? "s" : ""}` : ""),
+    conflict: conflicts > 0,
+  });
+  return rows;
+}
+
+/** Sheet tabs for multi-level models: pick which floor the 2D sheet shows. */
+function LevelTabs(): JSX.Element | null {
+  const pipeline = useApp((s) => s.pipeline);
+  const level = useApp((s) => s.level);
+  const setLevel = useApp((s) => s.setLevel);
+  const viewMode = useApp((s) => s.viewMode);
+  if (pipeline === null || viewMode === "3d") return null;
+  const levels = levelViews(pipeline);
+  if (levels.length < 2) return null;
+  return (
+    <div className="level-tabs">
+      {levels.map((l) => (
+        <button
+          key={l.ns ?? "(ground)"}
+          className={level === l.ns ? "active" : ""}
+          title={l.ns === null ? `Ground level (0")` : `${l.ns} at ${fmt16(l.elevInches)}`}
+          onClick={() => setLevel(l.ns)}
+        >
+          {l.ns ?? "ground"}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** The sheet's title block: live project/sheet/survey state, drafting-style. */
+function TitleBlock(): JSX.Element | null {
+  const viewMode = useApp((s) => s.viewMode);
+  const rows = useTitleRows();
+  if (rows.length === 0 || viewMode === "3d") return null;
 
   return (
     <div className={`titleblock ${viewMode === "split" ? "titleblock-split" : ""}`}>
-      <div className="tb-row">
-        <span className="tb-label">Project</span>
-        <span className="tb-value">{dirHandle?.name ?? "demo (browser only)"}</span>
-      </div>
-      <div className="tb-row">
-        <span className="tb-label">Sheet</span>
-        <span className="tb-value">
-          {branch}
-          {parent !== null && <span className="tb-dim"> ← {parent}</span>}
-        </span>
-      </div>
-      <div className="tb-row">
-        <span className="tb-label">Date</span>
-        <span className="tb-value">{today()}</span>
-      </div>
-      <div className="tb-row">
-        <span className="tb-label">Survey</span>
-        <span className="tb-value">
-          {measured} measured · {toMeasure} to measure
-          {conflicts > 0 && <span className="tb-conflict"> · {conflicts} conflict{conflicts > 1 ? "s" : ""}</span>}
-        </span>
-      </div>
+      {rows.map((r) => (
+        <div className="tb-row" key={r.label}>
+          <span className="tb-label">{r.label}</span>
+          <span className="tb-value">
+            {r.conflict === true ? <span className="tb-conflict">{r.value}</span> : r.value}
+          </span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -1253,6 +1308,7 @@ export default function App(): JSX.Element {
         <div className="canvas">
           {viewMode !== "3d" && <Plan2D />}
           {viewMode !== "2d" && <View3D />}
+          <LevelTabs />
           <TitleBlock />
         </div>
         <div className="sidebar">
