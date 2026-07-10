@@ -763,7 +763,37 @@ input:focus-visible {
   border-radius: 8px;
   box-shadow: 0 10px 30px rgb(0 0 0 / 0.45);
   padding: 10px;
-  width: 220px;
+  width: 250px;
+}
+
+.face-ref-row {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.face-ref {
+  flex: 1;
+  font-size: 11px;
+  font-family: var(--mono);
+  padding: 4px 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--muted);
+  cursor: pointer;
+  text-transform: lowercase;
+}
+
+.face-ref:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.face-ref.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
 }
 
 .value-editor-label {

@@ -1,7 +1,9 @@
 import {
   AblParseError,
+  type DimRef,
   type Expr,
   type ExprTerm,
+  type FaceRef,
   type LayerHeader,
   type ParsedLayer,
   type Point,
@@ -9,6 +11,7 @@ import {
   type SrcLoc,
   type Stmt,
 } from "./ast";
+import { parseFaceRefText } from "./faces";
 import { parseLength, type S64 } from "./units";
 
 const NAME = String.raw`[a-z_][a-z0-9_]*(?:\.[a-z0-9_]+)*`;
@@ -176,7 +179,7 @@ function parseSize(text: string, loc: SrcLoc): { w: S64; h: S64 } {
 }
 const LENGTH_RE = new RegExp(`^length\\(\\s*(${NAME})\\s*\\)\\s*=\\s*(.+)$`);
 const MEAS_RE = new RegExp(
-  `^meas\\s+(${NAME})\\s*:\\s*dist\\(\\s*(${NAME})\\s*,\\s*(${NAME})\\s*\\)\\s*=\\s*(${LEN}?)(\\[[^\\]]*\\])?$`,
+  `^meas\\s+(${NAME})\\s*:\\s*dist\\(\\s*(${NAME})\\s*,\\s*(${NAME})\\s*\\)\\s*=\\s*(${LEN}?)(\\[[^\\]]*\\])?\\s*(\\{.*\\})?$`,
 );
 const SPACE_RE = new RegExp(`^space\\s+(${NAME})\\s*(\\{.*\\})$`);
 const LEVEL_RE = new RegExp(`^level\\s+(${NAME})\\.\\*\\s*(\\{.*\\})$`);
@@ -196,10 +199,14 @@ function parseStmtLine(line: Line, pendingComments: string[]): Stmt {
   if ((m = WALLTYPE_RE.exec(body))) {
     const block = parseBlock(m[2]!, loc);
     requireKeys(block, ["thickness"], [], loc);
+    const tm = /^(.*?)(\[[^\]]*\])?$/.exec(block.get("thickness")!.trim())!;
+    const { prov, date } = parseProv(tm[2], loc);
     return {
       kind: "walltype",
       name: m[1]!,
-      thickness: parseLen(block.get("thickness")!, loc),
+      thickness: parseLen(tm[1]!, loc),
+      prov,
+      date,
       loc,
       leadingComments,
     };
@@ -261,13 +268,21 @@ function parseStmtLine(line: Line, pendingComments: string[]): Stmt {
     const args = m[2]!.split(",");
     if (args.length !== 2) throw new AblParseError(loc, `rect() takes (width, depth)`);
     const block = m[3] !== undefined ? parseBlock(m[3], loc) : new Map<string, string>();
-    requireKeys(block, [], ["at", "walls", "height"], loc);
+    requireKeys(block, [], ["at", "walls", "height", "dims"], loc);
     let height: { value: S64; prov: Provenance } | undefined;
     const heightText = block.get("height");
     if (heightText !== undefined) {
       const hm = /^(.*?)(\[[^\]]*\])?$/.exec(heightText.trim())!;
       const { prov } = parseProv(hm[2], loc);
       height = { value: parseLen(hm[1]!, loc), prov };
+    }
+    let dims: DimRef | undefined;
+    if (block.has("dims")) {
+      const d = block.get("dims")!.trim();
+      if (d !== "inner" && d !== "outer" && d !== "centerline") {
+        throw new AblParseError(loc, `dims: expected inner | outer | centerline`);
+      }
+      dims = d;
     }
     return {
       kind: "room",
@@ -277,6 +292,7 @@ function parseStmtLine(line: Line, pendingComments: string[]): Stmt {
       at: block.has("at") ? parsePoint(block.get("at")!, loc) : undefined,
       walls: block.has("walls") ? parseName(block.get("walls")!, loc) : undefined,
       height,
+      dims,
       loc,
       leadingComments,
     };
@@ -357,6 +373,17 @@ function parseStmtLine(line: Line, pendingComments: string[]): Stmt {
     if (prov !== "measured") {
       throw new AblParseError(loc, `meas statements are always [measured]`);
     }
+    let ref: FaceRef | undefined;
+    if (m[6] !== undefined) {
+      const block = parseBlock(m[6], loc);
+      requireKeys(block, ["ref"], [], loc);
+      try {
+        ref = parseFaceRefText(block.get("ref")!);
+      } catch (e) {
+        throw new AblParseError(loc, (e as Error).message);
+      }
+      if (ref.a === "centerline" && ref.b === "centerline") ref = undefined;
+    }
     return {
       kind: "meas",
       name: m[1]!,
@@ -364,6 +391,7 @@ function parseStmtLine(line: Line, pendingComments: string[]): Stmt {
       b: m[3]!,
       value: parseLen(m[4]!, loc),
       date,
+      ref,
       loc,
       leadingComments,
     };

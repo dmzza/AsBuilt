@@ -9,14 +9,19 @@ import {
 } from "react";
 import {
   allWallGrades,
+  defaultMeasureRef,
+  faceMeasureEndpoints,
   fixtureViews,
   formatLength,
+  formatFaceRef,
+  isCenterlineRef,
   junctionPos,
   levelOfKey,
   levelViews,
   openingViews,
   previewDiff,
   s64FromInches,
+  type FaceRef,
   type Grade,
   type OpeningView,
   type Pipeline,
@@ -135,7 +140,12 @@ export function Plan2D(): JSX.Element {
     const onLevel = (key: string): boolean => levelOfKey(key, levels) === level;
     const thickness = new Map<string, number>();
     for (const [key, eff] of pipeline.resolved.effective) {
-      if (eff.stmt.kind === "walltype") thickness.set(key, eff.stmt.thickness / 64);
+      if (eff.stmt.kind !== "walltype") continue;
+      const i = pipeline.solution.system.varIndex.get(`t:${key}`);
+      thickness.set(
+        key,
+        i !== undefined ? pipeline.solution.x[i]! : eff.stmt.thickness / 64,
+      );
     }
     const walls: {
       key: string;
@@ -152,6 +162,8 @@ export function Plan2D(): JSX.Element {
       b: { x: number; y: number };
       value: number; // s64
       adjacent: boolean;
+      /** Face ref for label/hint; undefined = centerline. */
+      ref?: FaceRef;
     }[] = [];
     const wallPairs = new Set<string>();
     const pairKey = (a: string, b: string): string => (a < b ? `${a}|${b}` : `${b}|${a}`);
@@ -178,17 +190,7 @@ export function Plan2D(): JSX.Element {
         voids.push({ key, x: s.at.x / 64, y: s.at.y / 64, w: s.w / 64, d: s.d / 64 });
       }
     }
-    for (const [key, eff] of pipeline.resolved.effective) {
-      const s = eff.stmt;
-      if (s.kind !== "meas") continue;
-      if (!onLevel(s.a)) continue;
-      const a = junctionPos(pipeline.solution, s.a);
-      const b = junctionPos(pipeline.solution, s.b);
-      if (a !== null && b !== null) {
-        measures.push({ key, a, b, value: s.value, adjacent: wallPairs.has(pairKey(s.a, s.b)) });
-      }
-    }
-    // centroid for outward dimension offsets
+    // centroid for outward dimension offsets + face-measure interior bias
     let cx = 0;
     let cy = 0;
     for (const j of junctions) {
@@ -199,6 +201,35 @@ export function Plan2D(): JSX.Element {
       junctions.length > 0
         ? { x: cx / junctions.length, y: cy / junctions.length }
         : { x: 0, y: 0 };
+
+    const thicknessOf = (wt: string): number => thickness.get(wt) ?? 4.5;
+    const getJ = (name: string): { x: number; y: number } | null =>
+      junctionPos(pipeline.solution, name);
+
+    for (const [key, eff] of pipeline.resolved.effective) {
+      const s = eff.stmt;
+      if (s.kind !== "meas") continue;
+      if (!onLevel(s.a)) continue;
+      // Face-ref meases land on the faces the tape hit, not junction centers.
+      const ends = faceMeasureEndpoints(
+        pipeline.resolved,
+        getJ,
+        thicknessOf,
+        s.a,
+        s.b,
+        s.ref,
+        centroid,
+      );
+      if (ends === null) continue;
+      measures.push({
+        key,
+        a: ends.a,
+        b: ends.b,
+        value: s.value,
+        adjacent: wallPairs.has(pairKey(s.a, s.b)),
+        ref: isCenterlineRef(s.ref) ? undefined : s.ref,
+      });
+    }
     return { walls, junctions, spaces, voids, measures, centroid };
   }, [pipeline, level]);
 
@@ -548,9 +579,10 @@ export function Plan2D(): JSX.Element {
       e.stopPropagation();
       if (measurePending === null) {
         setMeasurePending(key);
-      } else if (measurePending !== key) {
+      } else if (measurePending !== key && pipeline !== null) {
+        const face = defaultMeasureRef(pipeline, { a: measurePending, b: key });
         openEditor({
-          target: { kind: "measure-pair", a: measurePending, b: key },
+          target: { kind: "measure-pair", a: measurePending, b: key, face },
           anchor: { x: e.clientX, y: e.clientY },
           initial: "",
           label: `Measured ${measurePending} → ${key}`,
@@ -564,8 +596,10 @@ export function Plan2D(): JSX.Element {
   const onWallDown = (key: string, e: ReactPointerEvent): void => {
     if (tool === "measure") {
       e.stopPropagation();
+      const face =
+        pipeline !== null ? defaultMeasureRef(pipeline, { wall: key }) : "inner";
       openEditor({
-        target: { kind: "measure-wall", wall: key },
+        target: { kind: "measure-wall", wall: key, face },
         anchor: { x: e.clientX, y: e.clientY },
         initial: "",
         label: `Measured length of ${key}`,
@@ -1354,6 +1388,7 @@ interface DimProps {
     b: { x: number; y: number };
     value: number;
     adjacent: boolean;
+    ref?: FaceRef;
   };
   toScreen: (wx: number, wy: number) => { x: number; y: number };
   ppi: number;
@@ -1371,7 +1406,15 @@ interface DimProps {
 function DimensionGraphic({ m, toScreen, ppi, centroid, selected, suspect, onDown }: DimProps): JSX.Element | null {
   const color = suspect ? SHEET.conflict : GRADE_COLORS.measured;
   const width = selected ? 2 : 1.2;
-  const text = formatLength(m.value);
+  const faceLabel =
+    m.ref === undefined
+      ? ""
+      : m.ref.a === m.ref.b && m.ref.a === "inner"
+        ? " int"
+        : m.ref.a === m.ref.b && m.ref.a === "outer"
+          ? " ext"
+          : ` ${formatFaceRef(m.ref)}`;
+  const text = `${formatLength(m.value)}${faceLabel}`;
 
   const len = Math.hypot(m.b.x - m.a.x, m.b.y - m.a.y);
   if (len < 0.01) return null;
@@ -1411,6 +1454,8 @@ function DimensionGraphic({ m, toScreen, ppi, centroid, selected, suspect, onDow
     nx = -nx;
     ny = -ny;
   }
+  // Face-ref endpoints already sit on the wall face; keep the dim line a
+  // readable offset beyond that face (still outside the building by default).
   const off = 26 / ppi;
   const ext = 4 / ppi;
   const a1 = toScreen(m.a.x + nx * off, m.a.y + ny * off);
@@ -1419,7 +1464,6 @@ function DimensionGraphic({ m, toScreen, ppi, centroid, selected, suspect, onDow
   const b0 = toScreen(m.b.x, m.b.y);
   const aExt = toScreen(m.a.x + nx * (off + ext), m.a.y + ny * (off + ext));
   const bExt = toScreen(m.b.x + nx * (off + ext), m.b.y + ny * (off + ext));
-  const mid = { x: (a1.x + b1.x) / 2, y: (a1.y + b1.y) / 2 };
   const textPos = toScreen(
     (m.a.x + m.b.x) / 2 + nx * (off + 10 / ppi),
     (m.a.y + m.b.y) / 2 + ny * (off + 10 / ppi),
@@ -1428,9 +1472,9 @@ function DimensionGraphic({ m, toScreen, ppi, centroid, selected, suspect, onDow
   const tick = 5;
   const tx = (ux + nx) * 0.7071;
   const ty = (uy + ny) * 0.7071;
-  void mid;
   return (
     <g style={{ cursor: "pointer" }} onPointerDown={onDown}>
+      {/* Extension lines start at the face points the tape actually hit. */}
       <line x1={a0.x} y1={a0.y} x2={aExt.x} y2={aExt.y} stroke={color} strokeWidth={0.8} />
       <line x1={b0.x} y1={b0.y} x2={bExt.x} y2={bExt.y} stroke={color} strokeWidth={0.8} />
       <line x1={a1.x} y1={a1.y} x2={b1.x} y2={b1.y} stroke={color} strokeWidth={width} />
