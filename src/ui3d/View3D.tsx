@@ -7,6 +7,7 @@ import {
   levelOfKey,
   levelViews,
   openingViews,
+  previewDiff,
   type Pipeline,
 } from "../core";
 import { useApp } from "../state/store";
@@ -54,6 +55,7 @@ function addWallMeshes(
   pipeline: Pipeline,
   group: THREE.Group,
   matFor: (key: string) => THREE.Material,
+  filter?: (key: string) => boolean,
 ): void {
   const elevOf = elevLookup(pipeline);
   const thickness = new Map<string, number>();
@@ -70,6 +72,7 @@ function addWallMeshes(
   for (const [key, eff] of pipeline.resolved.effective) {
     const s = eff.stmt;
     if (s.kind !== "wall") continue;
+    if (filter !== undefined && !filter(key)) continue;
     const a = junctionPos(pipeline.solution, s.from);
     const b = junctionPos(pipeline.solution, s.to);
     if (a === null || b === null) continue;
@@ -166,21 +169,32 @@ function addSlabs(pipeline: Pipeline, group: THREE.Group, mat: THREE.Material): 
   }
 }
 
-function buildScene(pipeline: Pipeline, group: THREE.Group, selection: string | null): void {
+function buildScene(
+  pipeline: Pipeline,
+  group: THREE.Group,
+  selection: string | null,
+  highlight: Set<string>,
+): void {
   const wallMat = new THREE.MeshStandardMaterial({ color: 0xdfdbd0, roughness: 0.9 });
   const wallSelMat = new THREE.MeshStandardMaterial({ color: 0x93b4f8, roughness: 0.8 });
+  const wallHiMat = new THREE.MeshStandardMaterial({ color: 0xb7cbf6, roughness: 0.85 });
   const fixtureMat = new THREE.MeshStandardMaterial({ color: 0xaba79b, roughness: 0.7 });
   const fixtureSelMat = new THREE.MeshStandardMaterial({ color: 0x7c9cf0, roughness: 0.7 });
   const slabMat = new THREE.MeshStandardMaterial({ color: 0xd6d1c4, roughness: 0.95 });
 
-  addWallMeshes(pipeline, group, (key) => (selection === key ? wallSelMat : wallMat));
+  addWallMeshes(pipeline, group, (key) =>
+    selection === key ? wallSelMat : highlight.has(key) ? wallHiMat : wallMat,
+  );
   addSlabs(pipeline, group, slabMat);
 
   const elevOf = elevLookup(pipeline);
   for (const f of fixtureViews(pipeline)) {
     const h = FIXTURE_HEIGHTS[f.fixKind] ?? 30;
     const geo = new THREE.BoxGeometry(f.w, h, f.d);
-    const mesh = new THREE.Mesh(geo, selection === f.key ? fixtureSelMat : fixtureMat);
+    const mesh = new THREE.Mesh(
+      geo,
+      selection === f.key || highlight.has(f.key) ? fixtureSelMat : fixtureMat,
+    );
     mesh.position.set(f.x, elevOf(f.key) + h / 2, -f.y);
     mesh.rotation.y = (f.rot * Math.PI) / 180;
     mesh.userData.key = f.key;
@@ -206,6 +220,8 @@ export function View3D(): JSX.Element {
   const ghostOn = useApp((s) => s.ghost);
   const selection = useApp((s) => s.selection);
   const select = useApp((s) => s.select);
+  const preview = useApp((s) => s.preview);
+  const highlight = useApp((s) => s.highlight);
 
   const sceneRef = useRef<{
     renderer: THREE.WebGLRenderer;
@@ -214,6 +230,7 @@ export function View3D(): JSX.Element {
     controls: OrbitControls;
     group: THREE.Group;
     ghostGroup: THREE.Group;
+    previewGroup: THREE.Group;
     raf: number;
     fitted: boolean;
   } | null>(null);
@@ -278,6 +295,9 @@ export function View3D(): JSX.Element {
     // the parent branch's walls, translucent, never raycast
     const ghostGroup = new THREE.Group();
     scene.add(ghostGroup);
+    // hover preview: the hypothetical model's changed geometry, never raycast
+    const previewGroup = new THREE.Group();
+    scene.add(previewGroup);
 
     const state = {
       renderer,
@@ -286,6 +306,7 @@ export function View3D(): JSX.Element {
       controls,
       group,
       ghostGroup,
+      previewGroup,
       raf: 0,
       fitted: false,
     };
@@ -342,6 +363,7 @@ export function View3D(): JSX.Element {
       renderer.domElement.removeEventListener("pointerup", onUp);
       disposeGroup(group);
       disposeGroup(ghostGroup);
+      disposeGroup(previewGroup);
       controls.dispose();
       renderer.dispose();
       renderer.domElement.remove();
@@ -354,7 +376,7 @@ export function View3D(): JSX.Element {
     const state = sceneRef.current;
     if (state === null || pipeline === null) return;
     disposeGroup(state.group);
-    buildScene(pipeline, state.group, selection);
+    buildScene(pipeline, state.group, selection, new Set(highlight));
 
     disposeGroup(state.ghostGroup);
     if (ghostOn && ghostPipeline !== null) {
@@ -372,6 +394,42 @@ export function View3D(): JSX.Element {
       addWallMeshes(ghostPipeline, state.ghostGroup, () => ghostMat);
     }
 
+    disposeGroup(state.previewGroup);
+    if (preview !== null) {
+      const diff = previewDiff(pipeline, preview);
+      // an opening change re-renders its host wall with the new hole layout
+      const wallKeys = new Set(diff.walls);
+      for (const key of [...diff.openings, ...diff.removed]) {
+        const eff = preview.resolved.effective.get(key) ?? pipeline.resolved.effective.get(key);
+        if (eff?.stmt.kind === "opening") wallKeys.add(eff.stmt.wall);
+      }
+      if (wallKeys.size > 0 || diff.fixtures.length > 0) {
+        const previewMat = new THREE.MeshStandardMaterial({
+          color: 0x2563eb,
+          roughness: 0.8,
+          transparent: true,
+          opacity: 0.3,
+          depthWrite: false,
+          // pull in front of coplanar live walls: the hypothesis reads on top
+          polygonOffset: true,
+          polygonOffsetFactor: -2,
+          polygonOffsetUnits: -2,
+        });
+        addWallMeshes(preview, state.previewGroup, () => previewMat, (k) => wallKeys.has(k));
+        const elevOf = elevLookup(preview);
+        const fixKeys = new Set(diff.fixtures);
+        for (const f of fixtureViews(preview)) {
+          if (!fixKeys.has(f.key)) continue;
+          const h = FIXTURE_HEIGHTS[f.fixKind] ?? 30;
+          const geo = new THREE.BoxGeometry(f.w, h, f.d);
+          const mesh = new THREE.Mesh(geo, previewMat);
+          mesh.position.set(f.x, elevOf(f.key) + h / 2, -f.y);
+          mesh.rotation.y = (f.rot * Math.PI) / 180;
+          state.previewGroup.add(mesh);
+        }
+      }
+    }
+
     if (!state.fitted && state.group.children.length > 0) {
       state.fitted = true;
       const box = new THREE.Box3().setFromObject(state.group);
@@ -384,7 +442,7 @@ export function View3D(): JSX.Element {
         center.z + size * 0.7,
       );
     }
-  }, [pipeline, ghostPipeline, ghostOn, selection]);
+  }, [pipeline, ghostPipeline, ghostOn, selection, preview, highlight]);
 
   return <div ref={wrapRef} className="view3d" />;
 }

@@ -68,6 +68,10 @@ interface AppState {
   /** Parent branch's solved model, for the ghost overlay (null on the root). */
   ghostPipeline: Pipeline | null;
   ghost: boolean;
+  /** Hypothetical model: current files + a hovered proposal, solved scratch. */
+  preview: Pipeline | null;
+  /** Keys whose geometry lights up on the canvas (inspector hover). */
+  highlight: string[];
   dirHandle: FileSystemDirectoryHandle | null;
   dirty: Record<string, true>;
   selection: string | null;
@@ -90,6 +94,12 @@ interface AppState {
   setBranch(branch: string): void;
   reparent(newParent: string): void;
   toggleGhost(): void;
+  /** Debounced: solve `propose()` on the side and show it as a ghost. */
+  previewEdits(propose: () => TextEdit[]): void;
+  clearPreview(): void;
+  setHighlight(keys: string[]): void;
+  /** Preview the value editor's current (uncommitted) text. */
+  previewEditorValue(raw: string): void;
   resolveMasked(name: string, action: "keep" | "adopt"): void;
   dropOrphan(key: string): void;
   setTool(tool: Tool): void;
@@ -148,6 +158,37 @@ function compute(project: Project, branch: string): {
   }
 }
 
+/** Text edits for a value-editor target; shared by commit and hover preview. */
+function editsForTarget(
+  project: Project,
+  branch: string,
+  target: EditorTarget,
+  value: S64,
+): TextEdit[] {
+  switch (target.kind) {
+    case "param":
+      return proposeSetParam(
+        project,
+        branch,
+        target.name,
+        value,
+        target.prov,
+        target.prov === "measured" ? today() : undefined,
+      );
+    case "param-measure":
+      return proposeSetParam(project, branch, target.name, value, "measured", today());
+    case "measure-wall":
+      return proposeMeasure(project, branch, { wall: target.wall }, value, today());
+    case "measure-pair":
+      return proposeMeasure(project, branch, { a: target.a, b: target.b }, value, today());
+    case "meas-edit":
+      return proposeEditMeas(project, branch, target.name, value, today());
+  }
+}
+
+const PREVIEW_DEBOUNCE_MS = 80;
+let previewTimer: ReturnType<typeof setTimeout> | undefined;
+
 function firstWallType(project: Project): string {
   for (const [, l] of project.layers) {
     for (const s of l.parsed.stmts) {
@@ -164,6 +205,8 @@ export const useApp = create<AppState>((set, get) => ({
   pipelineError: null,
   ghostPipeline: null,
   ghost: true,
+  preview: null,
+  highlight: [],
   dirHandle: null,
   dirty: {},
   selection: null,
@@ -217,6 +260,8 @@ export const useApp = create<AppState>((set, get) => ({
       past: [],
       future: [],
       level: null,
+      preview: null,
+      highlight: [],
       wallType: firstWallType(project),
       ...compute(project, DEMO_BRANCH),
     });
@@ -246,6 +291,8 @@ export const useApp = create<AppState>((set, get) => ({
         past: [],
         future: [],
         level: null,
+        preview: null,
+        highlight: [],
         wallType: firstWallType(project),
         ...compute(project, branch),
       });
@@ -279,7 +326,14 @@ export const useApp = create<AppState>((set, get) => ({
   setBranch(branch) {
     const { project } = get();
     if (project === null) return;
-    set({ branch, selection: null, pendingStart: null, ...compute(project, branch) });
+    set({
+      branch,
+      selection: null,
+      pendingStart: null,
+      preview: null,
+      highlight: [],
+      ...compute(project, branch),
+    });
     persist.autosave(project.files, branch);
   },
 
@@ -295,6 +349,56 @@ export const useApp = create<AppState>((set, get) => ({
 
   toggleGhost() {
     set({ ghost: !get().ghost });
+  },
+
+  previewEdits(propose) {
+    if (previewTimer !== undefined) clearTimeout(previewTimer);
+    previewTimer = setTimeout(() => {
+      previewTimer = undefined;
+      const { project, branch } = get();
+      if (project === null) return;
+      try {
+        const edits = propose();
+        if (edits.length === 0) {
+          set({ preview: null });
+          return;
+        }
+        const next = applyEdits(project, edits);
+        set({ preview: resolveAndSolve(layerMap(next), branch) });
+      } catch {
+        // previews are best-effort; errors surface when the edit is committed
+        set({ preview: null });
+      }
+    }, PREVIEW_DEBOUNCE_MS);
+  },
+
+  clearPreview() {
+    if (previewTimer !== undefined) {
+      clearTimeout(previewTimer);
+      previewTimer = undefined;
+    }
+    if (get().preview !== null) set({ preview: null });
+  },
+
+  setHighlight(keys) {
+    set({ highlight: keys });
+  },
+
+  previewEditorValue(raw) {
+    const { editor, project, branch } = get();
+    if (editor === null || project === null) {
+      get().clearPreview();
+      return;
+    }
+    let value: S64;
+    try {
+      value = parseLength(raw);
+    } catch {
+      get().clearPreview();
+      return;
+    }
+    const target = editor.target;
+    get().previewEdits(() => editsForTarget(get().project!, branch, target, value));
   },
 
   resolveMasked(name, action) {
@@ -344,6 +448,7 @@ export const useApp = create<AppState>((set, get) => ({
         dirty: touched,
         past: [...past.slice(-HISTORY_CAP + 1), snapshot],
         future: [],
+        preview: null,
         ...compute(next, branch),
       });
       persist.autosave(next.files, branch);
@@ -540,6 +645,7 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   closeEditor() {
+    get().clearPreview();
     set({ editor: null });
   },
 
@@ -553,32 +659,8 @@ export const useApp = create<AppState>((set, get) => ({
       return (e as Error).message;
     }
     try {
-      const t = editor.target;
-      let edits: TextEdit[];
-      switch (t.kind) {
-        case "param":
-          edits = proposeSetParam(
-            project,
-            branch,
-            t.name,
-            value,
-            t.prov,
-            t.prov === "measured" ? today() : undefined,
-          );
-          break;
-        case "param-measure":
-          edits = proposeSetParam(project, branch, t.name, value, "measured", today());
-          break;
-        case "measure-wall":
-          edits = proposeMeasure(project, branch, { wall: t.wall }, value, today());
-          break;
-        case "measure-pair":
-          edits = proposeMeasure(project, branch, { a: t.a, b: t.b }, value, today());
-          break;
-        case "meas-edit":
-          edits = proposeEditMeas(project, branch, t.name, value, today());
-          break;
-      }
+      const edits = editsForTarget(project, branch, editor.target, value);
+      get().clearPreview();
       set({ editor: null, measurePending: null });
       get().runEdits(edits);
       return null;
@@ -599,6 +681,8 @@ export const useApp = create<AppState>((set, get) => ({
         past: past.slice(0, -1),
         future: [...future, { files: Object.fromEntries(project.files), branch }],
         selection: null,
+        preview: null,
+        highlight: [],
         dirty: markAllDirty(prev.files),
         ...compute(restored, prev.branch),
       });
@@ -620,6 +704,8 @@ export const useApp = create<AppState>((set, get) => ({
         future: future.slice(0, -1),
         past: [...past, { files: Object.fromEntries(project.files), branch }],
         selection: null,
+        preview: null,
+        highlight: [],
         dirty: markAllDirty(next.files),
         ...compute(restored, next.branch),
       });

@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import App from "../App";
+import { proposeSetParam } from "../core";
 import { useApp } from "../state/store";
 
 // jsdom lacks ResizeObserver and pointer capture
@@ -202,6 +203,71 @@ describe("app smoke (jsdom)", () => {
     expect(useApp.getState().project!.files.get("concepts/addition.abl")!).toContain(
       "layer addition : asbuilt",
     );
+  });
+
+  test("M6: hover previews ghost the hypothetical model; inspector hover highlights", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    // a pending edit previews on the canvas without touching the files
+    const before = useApp.getState().project!.files.get("asbuilt.abl")!;
+    await act(async () => {
+      const s = useApp.getState();
+      s.previewEdits(() =>
+        proposeSetParam(s.project!, s.branch, "k.width", 15 * 12 * 64, "approximated"),
+      );
+      await new Promise((r) => setTimeout(r, 150)); // debounce
+    });
+    expect(useApp.getState().preview).not.toBeNull();
+    expect(container.querySelector("[data-preview]")).not.toBeNull();
+    expect(useApp.getState().project!.files.get("asbuilt.abl")).toBe(before);
+
+    await act(async () => {
+      useApp.getState().clearPreview();
+    });
+    expect(container.querySelector("[data-preview]")).toBeNull();
+
+    // hover wiring: draw a wall, hover its Delete button -> removal strike
+    await act(async () => {
+      const s = useApp.getState();
+      s.setTool("wall");
+      s.placeWallPoint({ x: 0, y: 20 * 768 });
+      s.placeWallPoint({ x: 8 * 768, y: 20 * 768 }, "h");
+      s.setTool("select");
+      s.select("w1");
+    });
+    const del = [...container.querySelectorAll("button")].find(
+      (b) => b.textContent === "Delete",
+    )!;
+    expect(del).toBeDefined();
+    await act(async () => {
+      del.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 150));
+    });
+    const strike = container.querySelector('[data-preview] line[stroke-dasharray="3 3"]');
+    expect(strike).not.toBeNull();
+    await act(async () => {
+      del.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body }));
+    });
+    expect(container.querySelector("[data-preview]")).toBeNull();
+    // hovering never edited anything
+    expect(useApp.getState().project!.files.get("asbuilt.abl")!).toContain("wall w1");
+
+    // inspector hover: the Runs row lights up the wall's junctions on canvas
+    const runs = [...container.querySelectorAll(".prop")].find((p) =>
+      p.textContent!.includes("Runs"),
+    )!;
+    await act(async () => {
+      runs.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+    expect(useApp.getState().highlight.length).toBeGreaterThan(0);
+    expect(container.querySelector("[data-highlight]")).not.toBeNull();
+    await act(async () => {
+      runs.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body }));
+    });
+    expect(container.querySelector("[data-highlight]")).toBeNull();
   });
 
   test("wall tool store path: placing two points appends junctions + wall", async () => {

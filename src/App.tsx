@@ -2,14 +2,18 @@ import { useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "
 import {
   allParams,
   allWallGrades,
+  exprRefs,
   formatLength,
   junctionPos,
   levelViews,
   openingViews,
   parseLength,
   proposeDelete,
+  proposeDropOrphan,
   proposeEditMeas,
   proposeMove,
+  proposeReparent,
+  proposeResolveMasked,
   proposeSetFixture,
   proposeSetOpening,
   proposeSetOpeningOffset,
@@ -18,6 +22,7 @@ import {
   wallView,
   type Diagnostic,
   type Grade,
+  type Pipeline,
   type Provenance,
   type S64,
   type TextEdit,
@@ -54,18 +59,57 @@ function commitEdits(fn: () => TextEdit[]): string | null {
   }
 }
 
+/** Hover handlers: while the pointer rests on the control, ghost `propose()`. */
+function hoverPreview(propose: () => TextEdit[]): {
+  onMouseEnter: () => void;
+  onMouseLeave: () => void;
+  onFocus: () => void;
+  onBlur: () => void;
+} {
+  const show = (): void => useApp.getState().previewEdits(propose);
+  const hide = (): void => useApp.getState().clearPreview();
+  return { onMouseEnter: show, onMouseLeave: hide, onFocus: show, onBlur: hide };
+}
+
+/** Canvas keys a param drives directly: walls whose length binding cites it. */
+function keysForParam(pipeline: Pipeline, name: string): string[] {
+  const out: string[] = [];
+  for (const [key, eff] of pipeline.resolved.effective) {
+    if (eff.stmt.kind === "length" && exprRefs(eff.stmt.expr).includes(name)) {
+      out.push(key.slice(0, -".length".length));
+    }
+  }
+  return out;
+}
+
+/** Suspect/support keys → canvas keys: meas and walls pass through, params map
+ *  to the walls they bind, rect defaults map to their wall. */
+function canvasKeysFor(pipeline: Pipeline, key: string): string[] {
+  const eff = pipeline.resolved.effective.get(key);
+  if (eff === undefined) return [];
+  const k = eff.stmt.kind;
+  if (k === "param" || k === "set") return keysForParam(pipeline, key);
+  if (k === "length" || k === "axis") {
+    const dot = key.lastIndexOf(".");
+    return dot > 0 ? [key.slice(0, dot)] : [];
+  }
+  return [key];
+}
+
 /* ---------------------------------------------------------------- fields */
 
 interface FieldProps {
   value: string;
   /** Parse + apply; return an error message to keep the field open. */
   onCommit: (raw: string) => string | null;
+  /** Called on every keystroke while editing (hover-preview of pending edits). */
+  onPending?: (raw: string) => void;
   placeholder?: string;
   title?: string;
 }
 
 /** An inline editable value: click to edit, Enter applies, Esc cancels. */
-function Field({ value, onCommit, placeholder, title }: FieldProps): JSX.Element {
+function Field({ value, onCommit, onPending, placeholder, title }: FieldProps): JSX.Element {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(value);
   const [error, setError] = useState<string | null>(null);
@@ -102,6 +146,7 @@ function Field({ value, onCommit, placeholder, title }: FieldProps): JSX.Element
         onChange={(e) => {
           setText(e.target.value);
           setError(null);
+          onPending?.(e.target.value);
         }}
         onKeyDown={(e) => {
           e.stopPropagation();
@@ -110,30 +155,51 @@ function Field({ value, onCommit, placeholder, title }: FieldProps): JSX.Element
             if (err !== null) setError(err);
             else setEditing(false);
           } else if (e.key === "Escape") {
+            useApp.getState().clearPreview();
             setEditing(false);
           }
         }}
-        onBlur={() => setEditing(false)}
+        onBlur={() => {
+          useApp.getState().clearPreview();
+          setEditing(false);
+        }}
       />
       {error !== null && <span className="field-error">{error}</span>}
     </span>
   );
 }
 
-/** A length-valued Field: parses feet-inches, hands the S64 to `apply`. */
+/** A length-valued Field: parses feet-inches, hands the S64 to `apply`.
+ *  With `preview`, a pending (not yet committed) value ghosts on the canvas. */
 function LengthField({
   inches,
   apply,
+  preview,
   title,
 }: {
   inches: number;
   apply: (v: S64) => string | null;
+  preview?: (v: S64) => TextEdit[];
   title?: string;
 }): JSX.Element {
   return (
     <Field
       value={fmt16(inches)}
       title={title}
+      onPending={
+        preview === undefined
+          ? undefined
+          : (raw) => {
+              let v: S64;
+              try {
+                v = parseLength(raw);
+              } catch {
+                useApp.getState().clearPreview();
+                return;
+              }
+              useApp.getState().previewEdits(() => preview(v));
+            }
+      }
       onCommit={(raw) => {
         let v: S64;
         try {
@@ -515,9 +581,25 @@ function GradeChip({ grade }: { grade: Grade }): JSX.Element {
   );
 }
 
-function Prop({ label, children }: { label: string; children: ReactNode }): JSX.Element {
+function Prop({
+  label,
+  children,
+  refs,
+}: {
+  label: string;
+  children: ReactNode;
+  /** Canvas keys this row refers to: hovering the row lights them up. */
+  refs?: string[];
+}): JSX.Element {
+  const hover =
+    refs === undefined || refs.length === 0
+      ? {}
+      : {
+          onMouseEnter: () => useApp.getState().setHighlight(refs),
+          onMouseLeave: () => useApp.getState().setHighlight([]),
+        };
   return (
-    <div className="prop">
+    <div className="prop" {...hover}>
       <span className="prop-label">{label}</span>
       <span className="prop-value">{children}</span>
     </div>
@@ -562,11 +644,21 @@ function WallPanel({ selection }: { selection: string }): JSX.Element | null {
   return (
     <div className="panel">
       <h3>Wall {selection}</h3>
-      <Prop label="Length">
+      <Prop label="Length" refs={[selection]}>
         {boundParam !== null ? (
           <LengthField
             inches={w.lengthInches}
             title={`Edits ${boundParam} (${paramProv})`}
+            preview={(v) =>
+              proposeSetParam(
+                project,
+                branch,
+                boundParam!,
+                v,
+                paramProv,
+                paramProv === "measured" ? today() : undefined,
+              )
+            }
             apply={(v) =>
               commitEdits(() =>
                 proposeSetParam(
@@ -602,13 +694,13 @@ function WallPanel({ selection }: { selection: string }): JSX.Element | null {
           ))}
         </select>
       </Prop>
-      <Prop label="Runs">
+      <Prop label="Runs" refs={[w.from, w.to]}>
         <span className="ro mono">
           {w.from} → {w.to}
         </span>
       </Prop>
       {g !== undefined && g.support.length > 0 && (
-        <Prop label="Driven by">
+        <Prop label="Driven by" refs={g.support.flatMap((k) => canvasKeysFor(pipeline, k))}>
           <span className="ro mono">{g.support.join(", ")}</span>
         </Prop>
       )}
@@ -630,7 +722,11 @@ function WallPanel({ selection }: { selection: string }): JSX.Element | null {
         >
           Record measurement
         </button>
-        <button className="danger" onClick={deleteSelection}>
+        <button
+          className="danger"
+          onClick={deleteSelection}
+          {...hoverPreview(() => proposeDelete(project, branch, selection))}
+        >
           Delete
         </button>
       </div>
@@ -662,14 +758,30 @@ function JunctionPanel({ selection }: { selection: string }): JSX.Element | null
     }
   };
 
+  const movePreview = (x: number, y: number): TextEdit[] => {
+    const proposal = proposeMove(project, branch, selection, {
+      x: Math.round(x * 64),
+      y: Math.round(y * 64),
+    });
+    return proposal.kind === "refusal" || !proposal.verified ? [] : proposal.edits;
+  };
+
   return (
     <div className="panel">
       <h3>Junction {selection}</h3>
-      <Prop label="X (east)">
-        <LengthField inches={pos.x} apply={(v) => move(v / 64, pos.y)} />
+      <Prop label="X (east)" refs={[selection]}>
+        <LengthField
+          inches={pos.x}
+          preview={(v) => movePreview(v / 64, pos.y)}
+          apply={(v) => move(v / 64, pos.y)}
+        />
       </Prop>
-      <Prop label="Y (north)">
-        <LengthField inches={pos.y} apply={(v) => move(pos.x, v / 64)} />
+      <Prop label="Y (north)" refs={[selection]}>
+        <LengthField
+          inches={pos.y}
+          preview={(v) => movePreview(pos.x, v / 64)}
+          apply={(v) => move(pos.x, v / 64)}
+        />
       </Prop>
       <Prop label="Layer">
         <span className="ro mono">{eff.layer}</span>
@@ -697,33 +809,35 @@ function OpeningPanel({ selection }: { selection: string }): JSX.Element | null 
         {s.opKind === "door" ? "Door" : "Window"} {selection}
         {view?.overflow === true && <span className="overflow-badge">doesn't fit</span>}
       </h3>
-      <Prop label="In wall">
+      <Prop label="In wall" refs={[s.wall]}>
         <span className="ro mono">{s.wall}</span>
       </Prop>
-      <Prop label="Width">
+      <Prop label="Width" refs={[selection]}>
         <LengthField
           inches={s.width / 64}
+          preview={(v) => proposeSetOpening(project, branch, selection, { width: v })}
           apply={(v) => commitEdits(() => proposeSetOpening(project, branch, selection, { width: v }))}
         />
       </Prop>
-      <Prop label="Height">
+      <Prop label="Height" refs={[selection]}>
         <LengthField
           inches={s.height / 64}
           apply={(v) => commitEdits(() => proposeSetOpening(project, branch, selection, { height: v }))}
         />
       </Prop>
       {s.opKind === "window" && (
-        <Prop label="Sill">
+        <Prop label="Sill" refs={[selection]}>
           <LengthField
             inches={(s.sill ?? 0) / 64}
             apply={(v) => commitEdits(() => proposeSetOpening(project, branch, selection, { sill: v }))}
           />
         </Prop>
       )}
-      <Prop label={`From ${s.anchor}`}>
+      <Prop label={`From ${s.anchor}`} refs={[s.anchor, selection]}>
         <LengthField
           inches={view?.offsetInches ?? 0}
           title="Offset along the wall to the near jamb"
+          preview={(v) => proposeSetOpeningOffset(project, branch, selection, v)}
           apply={(v) => commitEdits(() => proposeSetOpeningOffset(project, branch, selection, v))}
         />
       </Prop>
@@ -731,7 +845,11 @@ function OpeningPanel({ selection }: { selection: string }): JSX.Element | null 
         <span className="ro mono">{eff.layer}</span>
       </Prop>
       <div className="panel-actions">
-        <button className="danger" onClick={deleteSelection}>
+        <button
+          className="danger"
+          onClick={deleteSelection}
+          {...hoverPreview(() => proposeDelete(project, branch, selection))}
+        >
           Delete
         </button>
       </div>
@@ -763,21 +881,24 @@ function FixturePanel({ selection }: { selection: string }): JSX.Element | null 
           }}
         />
       </Prop>
-      <Prop label="Width">
+      <Prop label="Width" refs={[selection]}>
         <LengthField
           inches={s.w / 64}
+          preview={(v) => proposeSetFixture(project, branch, selection, { w: v })}
           apply={(v) => commitEdits(() => proposeSetFixture(project, branch, selection, { w: v }))}
         />
       </Prop>
-      <Prop label="Depth">
+      <Prop label="Depth" refs={[selection]}>
         <LengthField
           inches={s.d / 64}
+          preview={(v) => proposeSetFixture(project, branch, selection, { d: v })}
           apply={(v) => commitEdits(() => proposeSetFixture(project, branch, selection, { d: v }))}
         />
       </Prop>
-      <Prop label="Center X">
+      <Prop label="Center X" refs={[selection]}>
         <LengthField
           inches={s.at.x / 64}
+          preview={(v) => proposeSetFixture(project, branch, selection, { at: { x: v, y: s.at.y } })}
           apply={(v) =>
             commitEdits(() =>
               proposeSetFixture(project, branch, selection, { at: { x: v, y: s.at.y } }),
@@ -785,9 +906,10 @@ function FixturePanel({ selection }: { selection: string }): JSX.Element | null 
           }
         />
       </Prop>
-      <Prop label="Center Y">
+      <Prop label="Center Y" refs={[selection]}>
         <LengthField
           inches={s.at.y / 64}
+          preview={(v) => proposeSetFixture(project, branch, selection, { at: { x: s.at.x, y: v } })}
           apply={(v) =>
             commitEdits(() =>
               proposeSetFixture(project, branch, selection, { at: { x: s.at.x, y: v } }),
@@ -795,12 +917,25 @@ function FixturePanel({ selection }: { selection: string }): JSX.Element | null 
           }
         />
       </Prop>
-      <Prop label="Rotation">
+      <Prop label="Rotation" refs={[selection]}>
         <span className="ro mono">{s.rot}°</span>
-        <button onClick={() => rotateFixture(selection)}>Rotate 90°</button>
+        <button
+          onClick={() => rotateFixture(selection)}
+          {...hoverPreview(() =>
+            proposeSetFixture(project, branch, selection, {
+              rot: (((s.rot + 90) % 360) as 0 | 90 | 180 | 270),
+            }),
+          )}
+        >
+          Rotate 90°
+        </button>
       </Prop>
       <div className="panel-actions">
-        <button className="danger" onClick={deleteSelection}>
+        <button
+          className="danger"
+          onClick={deleteSelection}
+          {...hoverPreview(() => proposeDelete(project, branch, selection))}
+        >
           Delete
         </button>
       </div>
@@ -820,15 +955,16 @@ function MeasPanel({ selection }: { selection: string }): JSX.Element | null {
   return (
     <div className="panel">
       <h3>Measurement {selection}</h3>
-      <Prop label="Span">
+      <Prop label="Span" refs={[selection, s.a, s.b]}>
         <span className="ro mono">
           {s.a} → {s.b}
         </span>
       </Prop>
-      <Prop label="Tape read">
+      <Prop label="Tape read" refs={[selection]}>
         <LengthField
           inches={s.value / 64}
           title="Correcting a reading re-dates it to today"
+          preview={(v) => proposeEditMeas(project, branch, selection, v, today())}
           apply={(v) => commitEdits(() => proposeEditMeas(project, branch, selection, v, today()))}
         />
       </Prop>
@@ -838,7 +974,11 @@ function MeasPanel({ selection }: { selection: string }): JSX.Element | null {
         </Prop>
       )}
       <div className="panel-actions">
-        <button className="danger" onClick={deleteSelection}>
+        <button
+          className="danger"
+          onClick={deleteSelection}
+          {...hoverPreview(() => proposeDelete(project, branch, selection))}
+        >
           Delete
         </button>
       </div>
@@ -877,6 +1017,7 @@ function SheetPanel(): JSX.Element | null {
   const ghost = useApp((s) => s.ghost);
   const toggleGhost = useApp((s) => s.toggleGhost);
   const ghostPipeline = useApp((s) => s.ghostPipeline);
+  const [picking, setPicking] = useState(false);
 
   const layer = project?.layers.get(branch);
   const parents = useMemo(() => {
@@ -913,17 +1054,33 @@ function SheetPanel(): JSX.Element | null {
         {parent === null ? (
           <span className="prop-muted">— as-built root</span>
         ) : (
-          <select
-            value={parent}
-            title="Re-parent this sheet (rebases it onto the new parent)"
-            onChange={(e) => reparent(e.target.value)}
-          >
-            {parents.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </select>
+          <span className="parent-picker">
+            <button
+              className="field mono"
+              title="Re-parent this sheet (rebases it onto the new parent)"
+              onClick={() => setPicking(!picking)}
+            >
+              {parent} ▾
+            </button>
+            {picking && (
+              <span className="parent-options">
+                {parents.map((p) => (
+                  <button
+                    key={p}
+                    className={p === parent ? "active" : ""}
+                    {...hoverPreview(() => proposeReparent(project, branch, p))}
+                    onClick={() => {
+                      setPicking(false);
+                      useApp.getState().clearPreview();
+                      if (p !== parent) reparent(p);
+                    }}
+                  >
+                    {p}
+                  </button>
+                ))}
+              </span>
+            )}
+          </span>
         )}
       </Prop>
       {parent !== null && ghostPipeline !== null && (
@@ -961,12 +1118,27 @@ function ParamsPanel(): JSX.Element | null {
       <table className="params">
         <tbody>
           {params.map((p) => (
-            <tr key={p.name} className={p.prov === "approximated" ? "row-audit" : ""}>
+            <tr
+              key={p.name}
+              className={p.prov === "approximated" ? "row-audit" : ""}
+              onMouseEnter={() => useApp.getState().setHighlight(keysForParam(pipeline, p.name))}
+              onMouseLeave={() => useApp.getState().setHighlight([])}
+            >
               <td className="param-name">{p.name}</td>
               <td className="param-value">
                 <LengthField
                   inches={p.solvedInches}
                   title={`Edit ${p.name} (stays ${p.prov})`}
+                  preview={(v) =>
+                    proposeSetParam(
+                      project,
+                      branch,
+                      p.name,
+                      v,
+                      p.prov,
+                      p.prov === "measured" ? today() : undefined,
+                    )
+                  }
                   apply={(v) =>
                     commitEdits(() =>
                       proposeSetParam(
@@ -1033,10 +1205,14 @@ function SuspectRow({ suspect }: { suspect: string }): JSX.Element | null {
   const doDelete = (): void => {
     runEdits(proposeDelete(project, branch, suspect));
   };
+  const rowHover = {
+    onMouseEnter: () => useApp.getState().setHighlight(canvasKeysFor(pipeline, suspect)),
+    onMouseLeave: () => useApp.getState().setHighlight([]),
+  };
 
   if (s.kind === "meas") {
     return (
-      <div className="suspect-row">
+      <div className="suspect-row" {...rowHover}>
         <span className="suspect-name">
           {suspect} = {formatLength(s.value)}{" "}
           <em>(measured{s.date !== undefined ? ` ${s.date}` : ""})</em>
@@ -1054,7 +1230,9 @@ function SuspectRow({ suspect }: { suspect: string }): JSX.Element | null {
           >
             Correct
           </button>
-          <button onClick={doDelete}>Remove</button>
+          <button onClick={doDelete} {...hoverPreview(() => proposeDelete(project, branch, suspect))}>
+            Remove
+          </button>
         </span>
       </div>
     );
@@ -1062,7 +1240,7 @@ function SuspectRow({ suspect }: { suspect: string }): JSX.Element | null {
 
   if ((s.kind === "param" || s.kind === "set") && s.prov === "measured") {
     return (
-      <div className="suspect-row">
+      <div className="suspect-row" {...rowHover}>
         <span className="suspect-name">
           {suspect} = {formatLength(s.value)} <em>(measured)</em>
         </span>
@@ -1082,6 +1260,7 @@ function SuspectRow({ suspect }: { suspect: string }): JSX.Element | null {
           <button
             title="Keep the value but stop treating it as gospel"
             onClick={() => setParam(suspect, s.value, "approximated")}
+            {...hoverPreview(() => proposeSetParam(project, branch, suspect, s.value, "approximated"))}
           >
             → approx
           </button>
@@ -1093,12 +1272,16 @@ function SuspectRow({ suspect }: { suspect: string }): JSX.Element | null {
   if (s.kind === "length" || s.kind === "axis") {
     const what = s.kind === "length" ? "equal-walls default" : "square-corner default";
     return (
-      <div className="suspect-row">
+      <div className="suspect-row" {...rowHover}>
         <span className="suspect-name">
           {suspect} <em>({what})</em>
         </span>
         <span className="suspect-actions">
-          <button title="Remove this default so the geometry can go out of square" onClick={doDelete}>
+          <button
+            title="Remove this default so the geometry can go out of square"
+            onClick={doDelete}
+            {...hoverPreview(() => proposeDelete(project, branch, suspect))}
+          >
             Relax
           </button>
         </span>
@@ -1112,6 +1295,7 @@ function SuspectRow({ suspect }: { suspect: string }): JSX.Element | null {
 /** A masked correction card: the base changed a value this sheet overrides. */
 function MaskedCard({ diag }: { diag: Diagnostic }): JSX.Element {
   const pipeline = useApp((s) => s.pipeline);
+  const project = useApp((s) => s.project);
   const branch = useApp((s) => s.branch);
   const resolveMasked = useApp((s) => s.resolveMasked);
   const name = diag.key!;
@@ -1126,12 +1310,14 @@ function MaskedCard({ diag }: { diag: Diagnostic }): JSX.Element {
           <button
             title={`Keep ${formatLength(override)} and acknowledge the new base`}
             onClick={() => resolveMasked(name, "keep")}
+            {...hoverPreview(() => proposeResolveMasked(project!, branch, name, "keep"))}
           >
             Keep {formatLength(override)}
           </button>
           <button
             title="Drop the override; the corrected base shows through"
             onClick={() => resolveMasked(name, "adopt")}
+            {...hoverPreview(() => proposeResolveMasked(project!, branch, name, "adopt"))}
           >
             Adopt {formatLength(base)}
           </button>
@@ -1146,6 +1332,8 @@ function MaskedCard({ diag }: { diag: Diagnostic }): JSX.Element {
 /** An orphan card: a statement pointing at something that no longer exists. */
 function OrphanCard({ diag }: { diag: Diagnostic }): JSX.Element {
   const dropOrphan = useApp((s) => s.dropOrphan);
+  const project = useApp((s) => s.project);
+  const branch = useApp((s) => s.branch);
   return (
     <div className="diag diag-error">
       {diag.message}
@@ -1153,7 +1341,11 @@ function OrphanCard({ diag }: { diag: Diagnostic }): JSX.Element {
         <div className="suspect-row">
           <span className="suspect-name">{diag.key}</span>
           <span className="suspect-actions">
-            <button title="Drop this statement from the sheet" onClick={() => dropOrphan(diag.key!)}>
+            <button
+              title="Drop this statement from the sheet"
+              onClick={() => dropOrphan(diag.key!)}
+              {...hoverPreview(() => proposeDropOrphan(project!, branch, diag.key!))}
+            >
               Remove
             </button>
           </span>
@@ -1214,6 +1406,7 @@ function ValueEditor(): JSX.Element | null {
   const editor = useApp((s) => s.editor);
   const commitEditor = useApp((s) => s.commitEditor);
   const closeEditor = useApp((s) => s.closeEditor);
+  const previewEditorValue = useApp((s) => s.previewEditorValue);
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -1243,6 +1436,7 @@ function ValueEditor(): JSX.Element | null {
         onChange={(e) => {
           setText(e.target.value);
           setError(null);
+          previewEditorValue(e.target.value);
         }}
         onKeyDown={(e) => {
           if (e.key === "Enter") {
