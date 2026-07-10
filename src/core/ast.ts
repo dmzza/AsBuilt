@@ -38,10 +38,30 @@ export interface LayerHeader extends StmtBase {
   parent: string | null;
 }
 
+/**
+ * Face of a wall at a junction for tape-measure reference.
+ * - `inner` — interior face (room clear dimension)
+ * - `outer` — exterior face
+ * - `centerline` — wall centerline (solver-canonical space)
+ */
+export type FaceEnd = "inner" | "outer" | "centerline";
+
+/** Per-end face refs for a meas along a span; order matches `dist(a, b)`. */
+export interface FaceRef {
+  a: FaceEnd;
+  b: FaceEnd;
+}
+
+/** How a rect template's width/depth params are interpreted. */
+export type DimRef = "inner" | "outer" | "centerline";
+
 export interface WallTypeStmt extends StmtBase {
   kind: "walltype";
   name: string;
   thickness: S64;
+  /** Thickness provenance; defaults to approximated when omitted in text. */
+  prov: Provenance;
+  date?: string;
 }
 
 export interface ParamStmt extends StmtBase {
@@ -76,7 +96,7 @@ export interface WallStmt extends StmtBase {
   wallType: string;
 }
 
-/** `room k : rect(w, d) { at: ~(x, y), walls: t, height: h [prov] }` — a template, expanded at resolve. */
+/** `room k : rect(w, d) { at: ~(x, y), walls: t, height: h [prov], dims: inner }` — a template, expanded at resolve. */
 export interface RoomRectStmt extends StmtBase {
   kind: "room";
   name: string;
@@ -86,6 +106,11 @@ export interface RoomRectStmt extends StmtBase {
   at?: Point;
   walls?: string;
   height?: { value: S64; prov: Provenance };
+  /**
+   * Whether width/depth params are face-to-face (inner/outer) or centerline.
+   * Default `centerline` for back-compat; field as-builts usually want `inner`.
+   */
+  dims?: DimRef;
 }
 
 /** `rectilinear ns.*` — axis-align every wall in the namespace (defeasible per wall). */
@@ -132,7 +157,12 @@ export interface FixtureStmt extends StmtBase {
   rot: 0 | 90 | 180 | 270;
 }
 
-/** `meas name : dist(a, b) = len [measured ...]` */
+/**
+ * `meas name : dist(a, b) = len [measured ...] { ref: inner }`
+ * Face-referenced tape read. Centerline is the default when `ref` is omitted.
+ * Solver space is always centerline; face refs desugar via crossing-wall
+ * half-thicknesses at each end (see faces.ts / solve.ts).
+ */
 export interface MeasStmt extends StmtBase {
   kind: "meas";
   name: string;
@@ -140,6 +170,8 @@ export interface MeasStmt extends StmtBase {
   b: string;
   value: S64;
   date?: string;
+  /** Omitted or both-centerline = legacy centerline behaviour. */
+  ref?: FaceRef;
 }
 
 export interface SpaceStmt extends StmtBase {

@@ -130,14 +130,17 @@ wall dl.south { from: dl.s, to: dl.sw, type: ext_2x6 }
 door d1 { in: k.west, at: 2'-6" from k.sw, size: 2'-8" x 6'-8" }
 window win1 { in: dl.north, at: 4'-0" from dl.nw, size: 4'-0" x 3'-0", sill: 2'-6" }
 
-room k : rect(k.width, k.depth) { at: ~(24'-0", 0"), walls: int_2x4, height: 8'-0" [measured] }
+room k : rect(k.width, k.depth) { at: ~(24'-0", 0"), walls: int_2x4, height: 8'-0" [measured], dims: inner }
+                                   % dims: inner → width/depth are clear (face-to-face); default is centerline
 
 rectilinear dl.*                   % axis-align every dl.* wall (defeasible per wall)
 axis w1 h                          % single-wall axis constraint (h or v)
 
 length(dl.north) = dl.width        % bind a wall's length to an expression
 
-meas m1 : dist(dl.sw, dl.ne) = 23'-11 1/4" [measured 2026-07-09]   % diagonals!
+meas m1 : dist(dl.sw, dl.ne) = 23'-11 1/4" [measured 2026-07-09]   % diagonals (centerline)
+meas m2 : dist(k.sw, k.se) = 11'-6" [measured] { ref: inner }      % face-referenced wall run
+                                                                   % also: { ref: outer } or { ref: inner, outer }
 
 fixture fridge { kind: fridge, at: ~(26'-0", 8'-0"), size: 3'-0" x 2'-6", rot: 90 }
 
@@ -150,6 +153,14 @@ void up.stairwell { at: ~(10'-6", 1'-0"), size: 3'-0" x 10'-0" }   % floor openi
 
 delete k.south.length              % tombstone (e.g. relax a rect default)
 ```
+
+Face-referenced measurement (M7): tape reads of room interiors are **not**
+centerline. Prefer `{ ref: inner }` for wall runs taped inside-to-inside, or
+author rooms with `dims: inner` so width/depth params mean clear dimensions.
+Never convert an inner tape into a measured param by adding wall thickness by
+hand — keep the observation as a face `meas` and let the solver own centerline.
+Walltype thickness carries provenance too: `walltype int_2x4 { thickness: 4 1/2" [approximated] }`
+(omitting the bracket still means approximated; print is byte-stable).
 
 Levels: a level is a namespace blanket (like `rectilinear`). Rooms move
 levels by rename — identity includes location. Name upper-storey params,
@@ -188,9 +199,10 @@ the parent.
 - Opening `at:` anchors must be endpoint junctions of the host wall.
 - Room `at:` = SW corner; fixture `at:` = center.
 - Missing `"` on an inch value silently means feet. Re-read your literals.
-- Don't bind both a room template's width AND add a `meas` for the same span
-  with the same value — measuring the span means promoting the param to
-  `[measured]` instead. A `meas` duplicating a bound span is only right when
+- Centerline measure of a single-param-bound wall promotes that param to
+  `[measured]`. Face-referenced (`ref: inner`/`outer`) measures of the same
+  wall **append a meas** instead — never freeze `param = tape ± thickness`.
+- A centerline `meas` that duplicates a bound span's value is only right when
   it's a genuinely different reading (then it's a conflict for the owner).
 
 ## Worked micro-example

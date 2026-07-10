@@ -2,6 +2,7 @@ import { create } from "zustand";
 import {
   applyEdits,
   createConcept,
+  defaultMeasureRef,
   layerMap,
   loadProject,
   parseLength,
@@ -19,6 +20,7 @@ import {
   proposeSetOpeningOffset,
   proposeSetParam,
   resolveAndSolve,
+  type FaceEnd,
   type Pipeline,
   type Point,
   type Project,
@@ -37,8 +39,8 @@ export type ViewMode = "2d" | "3d" | "split";
 export type EditorTarget =
   | { kind: "param"; name: string; prov: Provenance }
   | { kind: "param-measure"; name: string }
-  | { kind: "measure-wall"; wall: string }
-  | { kind: "measure-pair"; a: string; b: string }
+  | { kind: "measure-wall"; wall: string; face: FaceEnd }
+  | { kind: "measure-pair"; a: string; b: string; face: FaceEnd }
   | { kind: "meas-edit"; name: string };
 
 export interface EditorState {
@@ -180,9 +182,23 @@ function editsForTarget(
     case "param-measure":
       return proposeSetParam(project, branch, target.name, value, "measured", today());
     case "measure-wall":
-      return proposeMeasure(project, branch, { wall: target.wall }, value, today());
+      return proposeMeasure(
+        project,
+        branch,
+        { wall: target.wall },
+        value,
+        today(),
+        target.face,
+      );
     case "measure-pair":
-      return proposeMeasure(project, branch, { a: target.a, b: target.b }, value, today());
+      return proposeMeasure(
+        project,
+        branch,
+        { a: target.a, b: target.b },
+        value,
+        today(),
+        target.face,
+      );
     case "meas-edit":
       return proposeEditMeas(project, branch, target.name, value, today());
   }
@@ -658,6 +674,22 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   openEditor(editor) {
+    // Fill in a face-ref default for measure targets that predate the field
+    // (callers should set face; this is a safety net for partial targets).
+    const target = editor.target;
+    const pipeline = get().pipeline;
+    if (
+      pipeline !== null &&
+      (target.kind === "measure-wall" || target.kind === "measure-pair") &&
+      (target as { face?: FaceEnd }).face === undefined
+    ) {
+      const face =
+        target.kind === "measure-wall"
+          ? defaultMeasureRef(pipeline, { wall: target.wall })
+          : defaultMeasureRef(pipeline, { a: target.a, b: target.b });
+      set({ editor: { ...editor, target: { ...target, face } } });
+      return;
+    }
     set({ editor });
   },
 
