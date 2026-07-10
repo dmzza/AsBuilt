@@ -384,6 +384,10 @@ export function resolve(layers: Map<string, ParsedLayer>, branch: string): Resol
       case "axis":
         if (!has(s.wall, ["wall"])) badRef(key, s.wall, "wall");
         break;
+      case "stack":
+        if (!has(s.a, ["junction"])) badRef(key, s.a, "junction");
+        if (!has(s.b, ["junction"])) badRef(key, s.b, "junction");
+        break;
       default:
         break;
     }

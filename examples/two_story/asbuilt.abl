@@ -1,0 +1,35 @@
+% Two-story example house: levels, stacking, a stair void, openings,
+% fixtures, a tape-checked diagonal, and a concept branch (see concepts/).
+% The upper storey's width IS the ground storey's width (lv.w): correct the
+% as-built once and both floors follow.
+layer asbuilt
+
+walltype ext_2x6 { thickness: 6 1/2" }
+walltype int_2x4 { thickness: 4 1/2" }
+
+level up.* { elev: 9'-1" [approximated] }
+
+param k.d = 12'-0" [approximated]
+param k.w = 10'-0" [approximated]
+param lv.d = 12'-0" [measured 2026-07-08]
+param lv.w = 14'-0" [measured 2026-07-08]
+param up.m_d = 12'-0" [approximated]
+
+door front { in: lv.south, at: 2'-0" from lv.sw, size: 3'-0" x 6'-8" }
+window kw1 { in: k.east, at: 3'-0" from k.se, size: 3'-0" x 3'-6", sill: 2'-6" }
+window lw1 { in: lv.west, at: 4'-0" from lv.sw, size: 4'-0" x 4'-0", sill: 2'-6" }
+window up.mw1 { in: up.master.south, at: 5'-0" from up.master.sw, size: 3'-0" x 3'-0", sill: 2'-8" }
+
+room k : rect(k.w, k.d) { at: ~(14'-9", 0"), walls: int_2x4, height: 8'-1" [measured] }
+room lv : rect(lv.w, lv.d) { at: ~(0", 0"), walls: ext_2x6, height: 8'-1" [measured] }
+room up.master : rect(lv.w, up.m_d) { at: ~(0", 0"), walls: ext_2x6, height: 7'-9" [approximated] }
+
+meas m1 : dist(lv.sw, lv.ne) = 18'-5 1/4" [measured 2026-07-08]
+
+stack up.master.se on lv.se
+stack up.master.sw on lv.sw
+
+fixture stairs { kind: stair, at: ~(12'-0", 6'-0"), size: 3'-0" x 10'-0" }
+fixture up.bed { kind: bed, at: ~(4'-0", 8'-0"), size: 5'-0" x 6'-8" }
+
+void up.stairwell { at: ~(10'-6", 1'-0"), size: 3'-0" x 10'-0" }

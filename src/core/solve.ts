@@ -173,6 +173,27 @@ export function buildSystem(resolved: Resolved, opts: BuildOptions = {}): System
           return Math.hypot(dx, dy) - expr;
         },
       });
+    } else if (s.kind === "stack") {
+      // bearing alignment: `a` sits directly over `b` in plan
+      const axi = jVar(s.a, "x");
+      const ayi = jVar(s.a, "y");
+      const bxi = jVar(s.b, "x");
+      const byi = jVar(s.b, "y");
+      if (axi === null || ayi === null || bxi === null || byi === null) continue;
+      residuals.push({
+        key,
+        hard: true,
+        weight: W_HARD,
+        vars: [axi, bxi],
+        fn: (x) => x[axi]! - x[bxi]!,
+      });
+      residuals.push({
+        key,
+        hard: true,
+        weight: W_HARD,
+        vars: [ayi, byi],
+        fn: (x) => x[ayi]! - x[byi]!,
+      });
     } else if (s.kind === "meas") {
       const axi = jVar(s.a, "x");
       const ayi = jVar(s.a, "y");
