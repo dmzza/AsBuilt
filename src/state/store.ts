@@ -525,7 +525,7 @@ export const useApp = create<AppState>((set, get) => ({
     if (proposal.edits.length > 0) get().runEdits(proposal.edits);
     if (proposal.broke !== undefined && proposal.broke.length > 0) {
       get().showToast(
-        `Broke ${proposal.broke.join(", ")} — check Review if measurements disagree`,
+        `Drag demoted ${proposal.broke.join(", ")} (no longer measured) — re-tape if you want hard truth`,
         "info",
       );
     }
@@ -551,7 +551,7 @@ export const useApp = create<AppState>((set, get) => ({
     if (proposal.edits.length > 0) get().runEdits(proposal.edits);
     if (proposal.broke !== undefined && proposal.broke.length > 0) {
       get().showToast(
-        `Broke ${proposal.broke.join(", ")} — check Review if measurements disagree`,
+        `Drag demoted ${proposal.broke.join(", ")} (no longer measured) — re-tape if you want hard truth`,
         "info",
       );
     }
