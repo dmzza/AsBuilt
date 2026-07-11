@@ -7,25 +7,17 @@ Works for **hand drawing ↔ hand drawing** and **hand drawing ↔ AsBuilt rende
 ## Quick start
 
 ```bash
-# Seed the demo case (demo .abl → reference + candidate PNGs)
-npx vite-node scripts/seed-eval-demo.ts
-
-# Score (uses gold dims if present; otherwise vision if API key set)
-export ANTHROPIC_API_KEY=…   # or OPENAI_API_KEY
-# optional override: EVAL_VISION_MODEL=claude-sonnet-5  (this is already the default)
-npm run eval -- eval/cases/demo_dining
-
-# Interactive review (local server — Verify → gold saves into the case)
-npm run eval:review -- eval/cases/demo_dining
+npm run eval:ui
 ```
 
-In the review UI:
+Opens a local UI: **New eval** → drop your drawing + candidate (image or `.abl` project) → scores and opens review.
 
-1. Click a dimension **on the plan image** (span or off-wall label chip).
-2. Drag endpoint handles to fix the measured span.
-3. **Verify → gold** — persists into `gold/` (toast confirms when the review server is running).
-4. **Save all gold** writes every verified dim to the case.
-5. Re-run `npm run eval` to reuse gold.
+Or CLI:
+
+```bash
+npm run eval -- eval/cases/demo_dining
+npm run eval:review -- eval/cases/demo_dining
+```
 
 ## Case layout
 

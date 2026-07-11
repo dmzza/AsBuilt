@@ -1,0 +1,128 @@
+{
+  "version": 1,
+  "note": "Image-anchored gold dims: value + span endpoints in pixel space. No ABL entity IDs.",
+  "dimensions": [
+    {
+      "id": "dim-3",
+      "valueInches": 152,
+      "valueText": "12'-8\"",
+      "labelBBox": {
+        "x": 896,
+        "y": 405,
+        "w": 175,
+        "h": 40
+      },
+      "span": {
+        "a": {
+          "x": 516.80859375,
+          "y": 428.9453125
+        },
+        "b": {
+          "x": 1492,
+          "y": 430
+        }
+      },
+      "dimGraphics": {
+        "dimLine": {
+          "a": {
+            "x": 896,
+            "y": 430
+          },
+          "b": {
+            "x": 1492,
+            "y": 430
+          }
+        },
+        "extensionA": {
+          "a": {
+            "x": 896,
+            "y": 405
+          },
+          "b": {
+            "x": 896,
+            "y": 450
+          }
+        },
+        "extensionB": {
+          "a": {
+            "x": 1492,
+            "y": 405
+          },
+          "b": {
+            "x": 1492,
+            "y": 700
+          }
+        }
+      },
+      "confidence": 0.8,
+      "verified": true
+    },
+    {
+      "id": "dim-4",
+      "valueInches": 117,
+      "valueText": "9'-9\"",
+      "labelBBox": {
+        "x": 1792,
+        "y": 405,
+        "w": 60,
+        "h": 30
+      },
+      "span": {
+        "a": {
+          "x": 1491.03125,
+          "y": 428.3828125
+        },
+        "b": {
+          "x": 2239,
+          "y": 420
+        }
+      },
+      "dimGraphics": {
+        "dimLine": {
+          "a": {
+            "x": 1792,
+            "y": 420
+          },
+          "b": {
+            "x": 2239,
+            "y": 420
+          }
+        },
+        "extensionA": {
+          "a": {
+            "x": 1792,
+            "y": 420
+          },
+          "b": {
+            "x": 1792,
+            "y": 420
+          }
+        },
+        "extensionB": {
+          "a": {
+            "x": 2239,
+            "y": 390
+          },
+          "b": {
+            "x": 2239,
+            "y": 720
+          }
+        }
+      },
+      "confidence": 0.85,
+      "alternateSpans": [
+        {
+          "a": {
+            "x": 1492,
+            "y": 430
+          },
+          "b": {
+            "x": 1919,
+            "y": 430
+          }
+        }
+      ],
+      "verified": true
+    }
+  ]
+}

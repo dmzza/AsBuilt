@@ -8,9 +8,36 @@ export interface LayoutCompareResult {
   diffPng: Buffer;
 }
 
+/** Dilate a binary mask; used so nearby walls still count as agreement. */
+function dilateMask(
+  width: number,
+  height: number,
+  mask: Uint8Array,
+  radius: number,
+): Uint8Array {
+  if (radius <= 0) return mask;
+  const out = new Uint8Array(width * height);
+  const r2 = radius * radius;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (!mask[y * width + x]) continue;
+      for (let dy = -radius; dy <= radius; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          if (dx * dx + dy * dy > r2) continue;
+          const xx = x + dx;
+          const yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= width || yy >= height) continue;
+          out[yy * width + xx] = 1;
+        }
+      }
+    }
+  }
+  return out;
+}
+
 /**
  * Compare edge maps of reference vs aligned candidate in reference pixel space.
- * Emits regional findings where mismatch is concentrated.
+ * Soft F1: an edge counts as a hit if the other image has an edge within radius.
  */
 export async function compareLayout(
   referencePng: Buffer,
@@ -20,30 +47,50 @@ export async function compareLayout(
   const [ref, cand] = await Promise.all([toRgba(referencePng), toRgba(alignedCandidatePng)]);
   const re = edgeMap(ref.width, ref.height, ref.data);
   const ce = edgeMap(cand.width, cand.height, cand.data);
-  const edgeThresh = 35;
-  let agree = 0;
-  let refOnly = 0;
-  let candOnly = 0;
+  const edgeThresh = 40;
+  const radius = Math.max(2, Math.min(4, Math.round(Math.min(ref.width, ref.height) / 800)));
+
+  const refMask = new Uint8Array(ref.width * ref.height);
+  const candMask = new Uint8Array(ref.width * ref.height);
+  for (let i = 0; i < ref.width * ref.height; i++) {
+    if ((re[i] ?? 0) >= edgeThresh) refMask[i] = 1;
+    if ((ce[i] ?? 0) >= edgeThresh) candMask[i] = 1;
+  }
+  const refDilated = dilateMask(ref.width, ref.height, refMask, radius);
+  const candDilated = dilateMask(ref.width, ref.height, candMask, radius);
+
+  let refHits = 0;
+  let refEdges = 0;
+  let candHits = 0;
+  let candEdges = 0;
   const diff = Buffer.alloc(ref.width * ref.height * 4);
 
   for (let i = 0; i < ref.width * ref.height; i++) {
-    const rv = (re[i] ?? 0) >= edgeThresh;
-    const cv = (ce[i] ?? 0) >= edgeThresh;
     const o = i * 4;
-    if (rv && cv) {
-      agree++;
+    const rv = refMask[i] === 1;
+    const cv = candMask[i] === 1;
+    const rHit = rv && candDilated[i] === 1;
+    const cHit = cv && refDilated[i] === 1;
+    if (rv) {
+      refEdges++;
+      if (rHit) refHits++;
+    }
+    if (cv) {
+      candEdges++;
+      if (cHit) candHits++;
+    }
+
+    if (rHit || cHit) {
       diff[o] = 40;
       diff[o + 1] = 160;
       diff[o + 2] = 80;
       diff[o + 3] = 255;
-    } else if (rv && !cv) {
-      refOnly++;
+    } else if (rv) {
       diff[o] = 200;
       diff[o + 1] = 60;
       diff[o + 2] = 40;
       diff[o + 3] = 255;
-    } else if (!rv && cv) {
-      candOnly++;
+    } else if (cv) {
       diff[o] = 40;
       diff[o + 1] = 90;
       diff[o + 2] = 220;
@@ -57,11 +104,12 @@ export async function compareLayout(
     }
   }
 
-  const total = agree + refOnly + candOnly;
-  const score = total === 0 ? 0 : agree / total;
-  const findings: Finding[] = [];
+  const recall = refEdges === 0 ? 0 : refHits / refEdges;
+  const precision = candEdges === 0 ? 0 : candHits / candEdges;
+  const score =
+    recall + precision === 0 ? 0 : (2 * recall * precision) / (recall + precision);
 
-  // Tile the image and emit findings for hotspots
+  const findings: Finding[] = [];
   const tile = 128;
   let findingIdx = 0;
   for (let ty = 0; ty < ref.height; ty += tile) {
@@ -74,11 +122,14 @@ export async function compareLayout(
       for (let y = ty; y < ty + th; y++) {
         for (let x = tx; x < tx + tw; x++) {
           const i = y * ref.width + x;
-          const rv = (re[i] ?? 0) >= edgeThresh;
-          const cv = (ce[i] ?? 0) >= edgeThresh;
-          if (rv && cv) both++;
+          const rv = refMask[i] === 1;
+          const cv = candMask[i] === 1;
+          if (!rv && !cv) continue;
+          const rHit = rv && candDilated[i] === 1;
+          const cHit = cv && refDilated[i] === 1;
+          if (rHit || cHit) both++;
           else if (rv) rOnly++;
-          else if (cv) cOnly++;
+          else cOnly++;
         }
       }
       const tTotal = both + rOnly + cOnly;
@@ -120,7 +171,6 @@ export async function compareLayout(
     }
   }
 
-  // Cap findings for reviewability
   findings.sort((a, b) => {
     const area = (f: Finding) => (f.referenceBBox?.w ?? 0) * (f.referenceBBox?.h ?? 0);
     return area(b) - area(a);

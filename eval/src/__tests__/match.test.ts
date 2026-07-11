@@ -55,4 +55,10 @@ describe("matchDimensions", () => {
     expect(r.spanScore).toBe(0);
     expect(r.findings.some((f) => f.kind === "dim_span_mismatch")).toBe(true);
   });
+
+  test("empty reference dims score 0 (not vacuous 1)", () => {
+    const r = matchDimensions([], [dim("c1", 120, 0, 0, 100, 0)], identity);
+    expect(r.valueScore).toBe(0);
+    expect(r.spanScore).toBe(0);
+  });
 });

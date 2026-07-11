@@ -9,6 +9,7 @@ import { extractDimensions, visionTopologyFindings } from "./dims/extract";
 import { matchDimensions } from "./dims/match";
 import { compareLayout } from "./layout";
 import { drawDimsOverlay } from "./overlay";
+import { deriveVisionStatus } from "./vision/status";
 import type {
   DimGold,
   DimReading,
@@ -100,13 +101,38 @@ export async function scorePlanPair(
       status: "provisional",
     });
   }
+  const rotDeg = Math.abs((transform.rotation * 180) / Math.PI);
+  const nearOrtho = [0, 90, 180].some((d) => Math.abs(rotDeg - d) < 3);
+  if (rotDeg > 5 && !nearOrtho) {
+    findings.unshift({
+      id: "align-warning-rotation",
+      kind: "align_warning",
+      message: `Non-orthogonal alignment rotation ${((transform.rotation * 180) / Math.PI).toFixed(1)}° — review onion skin`,
+      severity: "warn",
+      status: "provisional",
+    });
+  }
+
+  const hasDims = referenceDimsUsed.length > 0;
+  if (!hasDims) {
+    notes.push("No reference dimensions available — overall reflects layout only");
+  }
+
+  const visionStatus = deriveVisionStatus({
+    notes,
+    referenceDimCount: referenceDimsUsed.length,
+    candidateDimCount: candidateDimsUsed.length,
+    usedReferenceGold: Boolean(input.referenceGold?.length),
+    usedCandidateGold: Boolean(input.candidateGold?.length),
+  });
 
   const axes: ScoreAxes = {
     layout: layout.score,
     dims: dimMatch.valueScore,
     spans: dimMatch.spanScore,
-    overall:
-      0.35 * layout.score + 0.4 * dimMatch.valueScore + 0.25 * dimMatch.spanScore,
+    overall: hasDims
+      ? 0.35 * layout.score + 0.4 * dimMatch.valueScore + 0.25 * dimMatch.spanScore
+      : layout.score,
   };
 
   const overlays = {
@@ -140,6 +166,7 @@ export async function scorePlanPair(
           findings,
           transform,
           notes,
+          visionStatus,
           referenceDimsUsed,
           candidateDimsUsed,
           proposedReferenceReadings,
@@ -162,5 +189,6 @@ export async function scorePlanPair(
     transform,
     overlays,
     notes,
+    visionStatus,
   };
 }
