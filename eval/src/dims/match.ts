@@ -142,7 +142,8 @@ export function matchDimensions(
     });
   }
 
-  const valueScore = reference.length === 0 ? 1 : valueHits / reference.length;
-  const spanScore = pairs === 0 ? (reference.length === 0 ? 1 : 0) : spanHits / pairs;
+  // Empty reference dims must not score as perfect (vacuous 1 polluted overall).
+  const valueScore = reference.length === 0 ? 0 : valueHits / reference.length;
+  const spanScore = pairs === 0 ? 0 : spanHits / pairs;
   return { findings, valueScore, spanScore };
 }

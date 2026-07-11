@@ -228,8 +228,13 @@ export async function extractDimensions(
   }
   notes.push(`Vision provider: ${client.provider} / ${client.model}`);
 
-  const full = await extractPass(client, png, "full-page");
-  notes.push(`Full-page pass found ${full.length} dimension(s)`);
+  let full: DimReading[] = [];
+  try {
+    full = await extractPass(client, png, "full-page");
+    notes.push(`Full-page pass found ${full.length} dimension(s)`);
+  } catch (e) {
+    notes.push(`Full-page extract failed: ${(e as Error).message}`);
+  }
 
   let tiled: DimReading[] = [];
   if (opts?.tiles !== false) {

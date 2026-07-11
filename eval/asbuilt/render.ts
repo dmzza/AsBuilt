@@ -200,12 +200,10 @@ export function renderAblProjectToPng(
   if (errors.length > 0) {
     throw new Error(`resolve errors: ${errors.map((e) => e.message).join("; ")}`);
   }
-  if (!pipeline.solution.converged) {
-    throw new Error("solver did not converge");
-  }
+  // Still render when the solver doesn't fully converge — eval needs a candidate image.
   const svg = pipelineToSvg(pipeline, opts);
   const png = svgToPng(svg, 2);
-  return { png, svg, branch };
+  return { png, svg, branch, converged: pipeline.solution.converged };
 }
 
 /** Render from in-memory file map (e.g. DEMO_FILES). */

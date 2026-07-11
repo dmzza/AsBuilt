@@ -14,7 +14,8 @@
     "check": "vite-node scripts/check.ts",
     "eval": "vite-node scripts/eval.ts",
     "eval:review": "vite-node scripts/eval-review.ts",
-    "eval:seed": "vite-node scripts/seed-eval-demo.ts"
+    "eval:seed": "vite-node scripts/seed-eval-demo.ts",
+    "eval:ui": "vite-node scripts/eval-ui.ts"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

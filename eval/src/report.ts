@@ -7,7 +7,8 @@
  */
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ScorePlanPairResult } from "./types";
+import type { ScorePlanPairResult, VisionStatus } from "./types";
+import { deriveVisionStatus, visionStatusTone } from "./vision/status";
 
 function esc(s: string): string {
   return s
@@ -15,6 +16,28 @@ function esc(s: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function visionBannerHtml(vs: VisionStatus): string {
+  const tone = visionStatusTone(vs.availability);
+  // Success: header pill is enough — don't steal vertical space.
+  if (vs.availability === "used") return "";
+  const how =
+    vs.availability === "missing_key"
+      ? "Add <code>ANTHROPIC_API_KEY</code> (or <code>OPENAI_API_KEY</code>) to <code>.env</code>, then re-score this case."
+      : vs.availability === "disabled"
+        ? "Re-run with vision enabled to propose dimensions."
+        : vs.availability === "gold_only"
+          ? "Live AI extract was not needed for dims; set an API key if you want topology vision too."
+          : "Check the notes below, fix the failure, and re-score.";
+  return `<div class="ai-banner ai-${tone}" role="alert">
+    <div class="ai-banner-title">
+      <strong>AI review: ${esc(vs.label)}</strong>
+      <span class="ai-pill ai-pill-${tone}">${esc(vs.availability.replace(/_/g, " "))}</span>
+    </div>
+    <p>${esc(vs.summary)}</p>
+    <p class="ai-how">${how}</p>
+  </div>`;
 }
 
 export function writeReviewReport(
@@ -25,6 +48,28 @@ export function writeReviewReport(
   const path = join(outDir, "review.html");
   const score = result.provisionalScore;
   const title = opts?.caseId ? `Plan fidelity — ${opts.caseId}` : "Plan fidelity review";
+  const vs =
+    result.visionStatus ??
+    deriveVisionStatus({
+      notes: result.notes,
+      referenceDimCount: result.referenceDimsUsed.length,
+      candidateDimCount: result.candidateDimsUsed.length,
+      usedReferenceGold: result.referenceDimsUsed.some((d) => d.verified),
+      usedCandidateGold: result.candidateDimsUsed.some((d) => d.verified),
+    });
+  const tone = visionStatusTone(vs.availability);
+  const refEmptyHint =
+    result.referenceDimsUsed.length === 0
+      ? vs.availability === "missing_key" || vs.availability === "failed"
+        ? `<div class="empty-hint">No reference dims — AI did not propose any. ${esc(vs.label)}.</div>`
+        : `<div class="empty-hint">No reference dimensions in this run.</div>`
+      : "";
+  const candEmptyHint =
+    result.candidateDimsUsed.length === 0
+      ? vs.availability === "missing_key" || vs.availability === "failed"
+        ? `<div class="empty-hint">No candidate dims — AI did not propose any. ${esc(vs.label)}.</div>`
+        : `<div class="empty-hint">No candidate dimensions in this run.</div>`
+      : "";
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -65,11 +110,42 @@ export function writeReviewReport(
   .toolbar button.primary, .inspector button.primary {
     background: #1f3d2e; border-color: #3a6b52; color: #c8f0d8;
   }
-  .server-pill {
+  .server-pill, .ai-status-pill {
     font-size: 0.72rem; padding: 0.15rem 0.5rem; border-radius: 999px;
     border: 1px solid #444; color: var(--muted);
   }
   .server-pill.on { color: var(--ok); border-color: #2a5a40; }
+  .ai-status-pill.ok { color: var(--ok); border-color: #2a5a40; }
+  .ai-status-pill.warn { color: var(--warn); border-color: #6a5020; background: #2a2210; }
+  .ai-status-pill.bad { color: var(--bad); border-color: #6a3030; background: #2a1515; font-weight: 600; }
+  .ai-banner {
+    flex: 0 0 auto;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--line);
+    font-size: 0.85rem;
+    line-height: 1.45;
+  }
+  .ai-banner p { margin: 0.35rem 0 0; }
+  .ai-banner .ai-how { color: var(--muted); font-size: 0.8rem; }
+  .ai-banner code {
+    font-size: 0.78rem; background: #0d0c0a; padding: 0.1rem 0.35rem; border-radius: 3px;
+  }
+  .ai-banner-title { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+  .ai-banner.ai-ok { background: #14241c; border-bottom-color: #2a5a40; color: #c8f0d8; }
+  .ai-banner.ai-ok span { color: #9bc4ae; font-weight: 400; margin-left: 0.5rem; }
+  .ai-banner.ai-warn { background: #2a2210; border-bottom-color: #6a5020; color: #f0d9a8; }
+  .ai-banner.ai-bad { background: #2a1515; border-bottom-color: #6a3030; color: #f0d0d0; }
+  .ai-pill {
+    font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em;
+    padding: 0.12rem 0.45rem; border-radius: 3px; border: 1px solid;
+  }
+  .ai-pill-ok { border-color: #2a5a40; color: var(--ok); }
+  .ai-pill-warn { border-color: #6a5020; color: var(--warn); }
+  .ai-pill-bad { border-color: #6a3030; color: var(--bad); }
+  .empty-hint {
+    font-size: 0.78rem; color: var(--warn); background: #2a2210;
+    border: 1px solid #6a5020; border-radius: 4px; padding: 0.5rem 0.65rem; margin: 0.35rem 0 0.6rem;
+  }
   main { flex: 1; display: grid; grid-template-columns: 1fr 320px; min-height: 0; }
   .stage-wrap { position: relative; overflow: auto; background: #0d0c0a; }
   .stage {
@@ -91,11 +167,15 @@ export function writeReviewReport(
     width: 100%; height: 100%;
     pointer-events: none;
   }
+  .stage svg.overlay.dragging { pointer-events: all; cursor: grabbing; }
   .stage svg.overlay .hit { pointer-events: stroke; cursor: pointer; }
-  .stage svg.overlay .handle { pointer-events: all; cursor: grab; }
-  .stage svg.overlay .handle:active { cursor: grabbing; }
+  .stage svg.overlay .handle,
+  .stage svg.overlay .handle-hit { pointer-events: all; cursor: grab; }
+  .stage svg.overlay .handle:active,
+  .stage svg.overlay .handle-hit:active { cursor: grabbing; }
+  .stage svg.overlay .handle-hit { fill: transparent; stroke: none; }
   .dim-group { pointer-events: none; }
-  .dim-group .hit, .dim-group .handle, .dim-group .label-hit { pointer-events: all; }
+  .dim-group .hit, .dim-group .handle, .dim-group .handle-hit, .dim-group .label-hit { pointer-events: all; }
   .dim-group.dim-ref .span { stroke: var(--accent); }
   .dim-group.dim-cand .span { stroke: var(--cand); }
   .dim-group.verified .span { stroke: var(--ok); }
@@ -189,6 +269,7 @@ export function writeReviewReport(
     <span>spans <b>${(score.spans * 100).toFixed(1)}%</b></span>
   </div>
   <div class="toolbar">
+    <span class="ai-status-pill ${tone}" id="ai-status-pill" title="${esc(vs.summary)}">${esc(vs.label)}</span>
     <span class="server-pill" id="server-pill">file mode</span>
     <div class="zoom-bar">
       <button type="button" id="zoom-out">−</button>
@@ -207,6 +288,7 @@ export function writeReviewReport(
     <button type="button" class="primary" id="export-gold">Save all gold</button>
   </div>
 </header>
+${visionBannerHtml(vs)}
 <main>
   <div class="stage-wrap" id="stage-wrap">
     <div class="stage" id="stage">
@@ -223,8 +305,10 @@ export function writeReviewReport(
       <h2>Selected</h2>
       <div class="inspector empty" id="inspector">Click a dimension or finding on the plan.</div>
       <h2>Reference dims <span class="badge ref" id="ref-count">0</span></h2>
+      ${refEmptyHint}
       <div class="list" id="ref-list"></div>
       <h2>Candidate dims <span class="badge cand" id="cand-count">0</span></h2>
+      ${candEmptyHint}
       <div class="list" id="cand-list"></div>
       <h2>Findings <span class="badge" id="find-count">0</span></h2>
       <div class="list" id="find-list"></div>
@@ -242,6 +326,7 @@ const state = {
   transform: ${JSON.stringify(result.transform)},
   decisions: [],
   notes: ${JSON.stringify(result.notes)},
+  visionStatus: ${JSON.stringify(result.visionStatus)},
   selected: null,
   showRef: true,
   showCand: true,
@@ -251,6 +336,7 @@ const state = {
   imgW: 0,
   imgH: 0,
   drag: null,
+  dragMoved: false,
   server: false,
 };
 
@@ -366,12 +452,36 @@ function recordCorrect(dimId, patch) {
   state.decisions.push({ dimId, action: 'correct', dimPatch: patch, at: new Date().toISOString() });
 }
 
-function setSelected(sel) {
+function setSelected(sel, opts = {}) {
   state.selected = sel;
-  renderOverlay();
+  if (!opts.skipOverlay) renderOverlay();
+  else syncSelectionClasses();
   renderLists();
   renderInspector();
-  if (sel?.kind === 'dim') scrollDimIntoView(sel.side, sel.id);
+  if (sel?.kind === 'dim' && !opts.skipScroll) scrollDimIntoView(sel.side, sel.id);
+}
+
+/** Update selected classes without destroying SVG nodes (keeps pointer capture alive). */
+function syncSelectionClasses() {
+  overlay.querySelectorAll('.dim-group').forEach(g => {
+    const on = state.selected?.kind === 'dim'
+      && g.getAttribute('data-side') === state.selected.side
+      && g.getAttribute('data-id') === state.selected.id;
+    g.classList.toggle('selected', on);
+  });
+  overlay.querySelectorAll('.finding-box').forEach(el => {
+    const on = state.selected?.kind === 'finding'
+      && el.getAttribute('data-finding') === state.selected.id;
+    el.classList.toggle('selected', on);
+  });
+}
+
+/** Screen-stable handle radius in image space (CSS zoom otherwise shrinks hit targets). */
+function handleRadii(selected) {
+  const z = Math.max(0.05, state.zoom);
+  const vis = Math.max(selected ? 9 : 7, (selected ? 11 : 9) / z);
+  const hit = Math.max(vis + 6, 18 / z);
+  return { vis, hit };
 }
 
 function scrollDimIntoView(side, id) {
@@ -426,12 +536,14 @@ function renderOverlay() {
       const tw = Math.max(54, label.length * 8 + 20);
       const th = 20;
       const place = labelPlacement(d.span, tw, th);
-      const handleR = selected ? 9 : 7;
+      const { vis: handleR, hit: hitR } = handleRadii(selected);
 
       parts.push(\`<g class="\${cls}" data-side="\${side}" data-id="\${escAttr(raw.id)}">
         <line class="hit" x1="\${d.span.a.x}" y1="\${d.span.a.y}" x2="\${d.span.b.x}" y2="\${d.span.b.y}"/>
         <line class="span" x1="\${d.span.a.x}" y1="\${d.span.a.y}" x2="\${d.span.b.x}" y2="\${d.span.b.y}"/>
         <line class="leader" x1="\${place.anchor.x}" y1="\${place.anchor.y}" x2="\${place.leaderEnd.x}" y2="\${place.leaderEnd.y}"/>
+        <circle class="handle-hit" data-which="a" cx="\${d.span.a.x}" cy="\${d.span.a.y}" r="\${hitR}"/>
+        <circle class="handle-hit" data-which="b" cx="\${d.span.b.x}" cy="\${d.span.b.y}" r="\${hitR}"/>
         <circle class="handle" data-which="a" cx="\${d.span.a.x}" cy="\${d.span.a.y}" r="\${handleR}"/>
         <circle class="handle" data-which="b" cx="\${d.span.b.x}" cy="\${d.span.b.y}" r="\${handleR}"/>
         <g class="label-chip label-hit" transform="translate(\${place.lx}, \${place.ly})">
@@ -447,6 +559,54 @@ function renderOverlay() {
 
   overlay.innerHTML = parts.join('');
   bindOverlayEvents();
+}
+
+/** Mutate span/handle/label geometry in place during drag (no innerHTML rebuild). */
+function updateDimGeometry(side, id) {
+  const raw = findDim(side, id);
+  if (!raw) return;
+  const d = side === 'candidate' ? candidateInRefSpace(raw) : raw;
+  const g = overlay.querySelector(\`[data-side="\${side}"][data-id="\${CSS.escape(id)}"]\`);
+  if (!g) return;
+  const selected = state.selected?.kind === 'dim' && state.selected.side === side && state.selected.id === id;
+  const { vis: handleR, hit: hitR } = handleRadii(selected);
+  g.querySelectorAll('.hit, .span').forEach(line => {
+    line.setAttribute('x1', d.span.a.x);
+    line.setAttribute('y1', d.span.a.y);
+    line.setAttribute('x2', d.span.b.x);
+    line.setAttribute('y2', d.span.b.y);
+  });
+  g.querySelectorAll('.handle-hit, .handle').forEach(c => {
+    const which = c.getAttribute('data-which');
+    const p = d.span[which];
+    c.setAttribute('cx', p.x);
+    c.setAttribute('cy', p.y);
+    c.setAttribute('r', c.classList.contains('handle-hit') ? hitR : handleR);
+  });
+  const label = raw.valueText || (raw.valueInches.toFixed(2) + '"');
+  const tw = Math.max(54, label.length * 8 + 20);
+  const th = 20;
+  const place = labelPlacement(d.span, tw, th);
+  const leader = g.querySelector('.leader');
+  if (leader) {
+    leader.setAttribute('x1', place.anchor.x);
+    leader.setAttribute('y1', place.anchor.y);
+    leader.setAttribute('x2', place.leaderEnd.x);
+    leader.setAttribute('y2', place.leaderEnd.y);
+  }
+  const chip = g.querySelector('.label-chip');
+  if (chip) chip.setAttribute('transform', \`translate(\${place.lx}, \${place.ly})\`);
+}
+
+function updateInspectorSpanOnly() {
+  const sel = state.selected;
+  if (!sel || sel.kind !== 'dim') return;
+  const d = findDim(sel.side, sel.id);
+  if (!d) return;
+  const spanEl = inspector.querySelector('[data-span-coords]');
+  if (spanEl) {
+    spanEl.textContent = \`A(\${d.span.a.x.toFixed(0)}, \${d.span.a.y.toFixed(0)}) → B(\${d.span.b.x.toFixed(0)}, \${d.span.b.y.toFixed(0)})\`;
+  }
 }
 
 function escAttr(s) {
@@ -480,17 +640,32 @@ function bindOverlayEvents() {
     const id = g.getAttribute('data-id');
     g.querySelectorAll('.hit, .label-hit, .span').forEach(el => {
       el.addEventListener('click', (e) => {
+        if (state.dragMoved) return; // suppress click after a drag
         e.stopPropagation();
         setSelected({ kind: 'dim', side, id });
       });
     });
-    g.querySelectorAll('.handle').forEach(h => {
+    g.querySelectorAll('.handle-hit, .handle').forEach(h => {
       h.addEventListener('pointerdown', (e) => {
+        if (e.button !== undefined && e.button !== 0) return;
         e.stopPropagation();
         e.preventDefault();
-        setSelected({ kind: 'dim', side, id });
-        state.drag = { side, id, which: h.getAttribute('data-which') };
-        h.setPointerCapture(e.pointerId);
+        // Select without rebuilding SVG — rebuilding would detach this handle and lose capture.
+        state.selected = { kind: 'dim', side, id };
+        state.drag = {
+          side,
+          id,
+          which: h.getAttribute('data-which'),
+          pointerId: e.pointerId,
+          originX: e.clientX,
+          originY: e.clientY,
+        };
+        state.dragMoved = false;
+        syncSelectionClasses();
+        renderLists();
+        renderInspector();
+        overlay.classList.add('dragging');
+        try { h.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
       });
     });
   });
@@ -517,18 +692,38 @@ function bindOverlayEvents() {
   });
 }
 
-overlay.addEventListener('pointermove', (e) => {
+function endDrag(e) {
   if (!state.drag) return;
+  if (e && state.drag.pointerId != null && e.pointerId != null && e.pointerId !== state.drag.pointerId) return;
+  const { side, id } = state.drag;
+  const d = findDim(side, id);
+  if (d && state.dragMoved) recordCorrect(id, { span: { a: { ...d.span.a }, b: { ...d.span.b } } });
+  state.drag = null;
+  overlay.classList.remove('dragging');
+  // Final rebuild so labels/handles settle cleanly after zoom-compensated sizes.
+  renderOverlay();
+  renderInspector();
+}
+
+function onDragMove(e) {
+  if (!state.drag) return;
+  if (state.drag.pointerId != null && e.pointerId != null && e.pointerId !== state.drag.pointerId) return;
+  const dx = e.clientX - state.drag.originX;
+  const dy = e.clientY - state.drag.originY;
+  if (!state.dragMoved && Math.hypot(dx, dy) < 3) return;
+  state.dragMoved = true;
   const { side, id, which } = state.drag;
   const d = findDim(side, id);
   if (!d) return;
   d.span[which] = displayToStored(side, clientToImage(e));
-  recordCorrect(id, { span: { ...d.span } });
-  renderOverlay();
-  renderInspector();
-});
-overlay.addEventListener('pointerup', () => { state.drag = null; });
-overlay.addEventListener('pointercancel', () => { state.drag = null; });
+  updateDimGeometry(side, id);
+  updateInspectorSpanOnly();
+}
+
+// Window-level listeners survive CSS zoom and keep dragging even if the capture target is lost.
+window.addEventListener('pointermove', onDragMove);
+window.addEventListener('pointerup', endDrag);
+window.addEventListener('pointercancel', endDrag);
 
 function renderLists() {
   const refList = document.getElementById('ref-list');
@@ -617,7 +812,7 @@ function renderInspector() {
       <span style="color:var(--muted);font-size:0.75rem">\${d.valueInches.toFixed(2)}"</span>
     </div>
     <div class="row"><label>Span</label>
-      <span style="font-family:ui-monospace;font-size:0.72rem;color:var(--muted)">
+      <span data-span-coords style="font-family:ui-monospace;font-size:0.72rem;color:var(--muted)">
         A(\${d.span.a.x.toFixed(0)}, \${d.span.a.y.toFixed(0)}) → B(\${d.span.b.x.toFixed(0)}, \${d.span.b.y.toFixed(0)})
       </span>
     </div>
@@ -684,6 +879,8 @@ function applyZoom() {
   stage.style.transform = \`scale(\${state.zoom})\`;
   stage.style.transformOrigin = '0 0';
   document.getElementById('zoom-label').textContent = Math.round(state.zoom * 100) + '%';
+  // Rebuild so handle hit radii stay screen-stable under CSS scale.
+  if (state.imgW && !state.drag) renderOverlay();
 }
 
 function fitZoom() {
