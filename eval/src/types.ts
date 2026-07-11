@@ -1,0 +1,155 @@
+/** Image-space point (pixels, origin top-left). */
+export interface Point {
+  x: number;
+  y: number;
+}
+
+export interface BBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Measured span on an image — endpoints are first-class. */
+export interface DimSpan {
+  a: Point;
+  b: Point;
+}
+
+/** Optional dimension annotation graphics (vs wall strokes). */
+export interface DimGraphics {
+  dimLine?: { a: Point; b: Point };
+  extensionA?: { a: Point; b: Point };
+  extensionB?: { a: Point; b: Point };
+}
+
+/**
+ * A dimension reading anchored to an image.
+ * Gold requires verified value + span; no tool/ABL entity IDs.
+ */
+export interface DimReading {
+  id: string;
+  valueInches: number;
+  /** Raw text as read, e.g. 13'-0" */
+  valueText?: string;
+  labelBBox: BBox;
+  span: DimSpan;
+  dimGraphics?: DimGraphics;
+  confidence?: number;
+  /** Competing span interpretations when wall vs dim-line is ambiguous. */
+  alternateSpans?: DimSpan[];
+  /** Set when a human has verified value + span. */
+  verified?: boolean;
+}
+
+export type DimGold = DimReading & { verified: true };
+
+export type FindingKind =
+  | "dim_value_mismatch"
+  | "dim_span_mismatch"
+  | "dim_unmatched_reference"
+  | "dim_unmatched_candidate"
+  | "layout_missing"
+  | "layout_extra"
+  | "topology"
+  | "align_warning";
+
+export type FindingStatus = "provisional" | "accepted" | "rejected";
+
+export interface Finding {
+  id: string;
+  kind: FindingKind;
+  message: string;
+  severity: "error" | "warn" | "info";
+  /** Region on reference image (if applicable). */
+  referenceBBox?: BBox;
+  /** Region on candidate image in candidate pixel space (pre-align). */
+  candidateBBox?: BBox;
+  /** Region on aligned candidate overlay (reference pixel space). */
+  alignedBBox?: BBox;
+  referenceDimId?: string;
+  candidateDimId?: string;
+  expectedInches?: number;
+  actualInches?: number;
+  deltaInches?: number;
+  status: FindingStatus;
+}
+
+export interface SimilarityTransform {
+  /** Candidate → reference: scale, rotation (radians), translation. */
+  scale: number;
+  rotation: number;
+  tx: number;
+  ty: number;
+}
+
+export interface ScoreTolerances {
+  /** Max |Δ| in inches for a dim value match. Default 0.5. */
+  dimInches?: number;
+  /** Max endpoint distance in reference pixels for span agreement (after align). */
+  spanPx?: number;
+  /** Layout ink mismatch fraction before emitting a finding. */
+  layoutMismatch?: number;
+}
+
+export interface ScoreAxes {
+  /** 0–1 composite. */
+  overall: number;
+  layout: number;
+  dims: number;
+  /** Span association quality among paired dims. */
+  spans: number;
+}
+
+export interface OverlayArtifacts {
+  /** Paths relative to the run output directory. */
+  referencePng: string;
+  candidatePng: string;
+  alignedCandidatePng: string;
+  onionSkinPng: string;
+  layoutDiffPng?: string;
+  dimsOverlayPng?: string;
+}
+
+export interface ScorePlanPairInput {
+  reference: Buffer;
+  candidate: Buffer;
+  referenceGold?: DimGold[];
+  candidateGold?: DimGold[];
+  tolerances?: ScoreTolerances;
+  /** When true (default), call vision for dims/layout if gold missing / always for layout. */
+  useVision?: boolean;
+  /** Run id / output dir for artifact paths (set by CLI). */
+  artifactDir?: string;
+}
+
+export interface ScorePlanPairResult {
+  provisionalScore: ScoreAxes;
+  findings: Finding[];
+  proposedReferenceReadings: DimReading[];
+  proposedCandidateReadings: DimReading[];
+  referenceDimsUsed: DimReading[];
+  candidateDimsUsed: DimReading[];
+  transform: SimilarityTransform;
+  overlays: OverlayArtifacts;
+  notes: string[];
+}
+
+export interface CaseMeta {
+  branch?: string;
+  /** If set, render this project dir to candidate.png before scoring. */
+  asbuiltProject?: string;
+  tolerances?: ScoreTolerances;
+  title?: string;
+}
+
+export interface ReviewDecision {
+  findingId?: string;
+  dimId?: string;
+  action: "accept" | "reject" | "correct";
+  /** For correct: patched dim fields. */
+  dimPatch?: Partial<DimReading>;
+  note?: string;
+  at: string;
+}

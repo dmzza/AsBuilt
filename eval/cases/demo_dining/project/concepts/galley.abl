@@ -1,0 +1,4 @@
+% Concept: narrow the kitchen to a galley
+layer galley : asbuilt
+
+set k.width = 9'-6" [designed] (was 11'-6")
