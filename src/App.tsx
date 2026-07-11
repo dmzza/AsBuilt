@@ -1602,7 +1602,7 @@ export default function App(): JSX.Element {
             <p className="hint">
               Click a value to edit it. Drag junctions or walls — a blue ghost shows the
               result before you release. Hold <b>⌥/Alt</b> or <b>⌘</b> to force through
-              hard (measured) constraints; Review lists leftover fights.{" "}
+              hard locks: dragged measurements demote to approximated (drag ≠ tape).{" "}
               <b>Measure</b>: wall or two junctions, then type the tape. Scroll pans,
               pinch/⌘-scroll zooms. ⌫ deletes, ⌘Z undoes.
             </p>
