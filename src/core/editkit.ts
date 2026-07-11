@@ -16,7 +16,7 @@ import {
 } from "./ast";
 import { normalizeFaceRef } from "./faces";
 import { resolve } from "./merge";
-import { perturbParam, resolveAndSolve, type Pipeline } from "./model";
+import { perturbParam, resolveAndSolve, wallView, type Pipeline } from "./model";
 import { parseLayerFile } from "./parser";
 import { printStmt } from "./printer";
 import { buildSystem, junctionPos, solve } from "./solve";
@@ -236,31 +236,33 @@ export function verifyWallMove(
   }
 }
 
+/**
+ * Rewrite a param for a drag. Measured values may only change when
+ * `allowMeasuredRewrite` (force-break); they are always demoted — a drag is
+ * never a field re-tape.
+ */
 function paramEditFor(
   project: Project,
   branch: string,
   pipeline: Pipeline,
   param: string,
   newValue: S64,
-  forceBreak: boolean,
+  allowMeasuredRewrite: boolean,
 ): TextEdit[] | null {
   const eff = pipeline.resolved.effective.get(param);
   if (eff === undefined || (eff.stmt.kind !== "param" && eff.stmt.kind !== "set")) {
     return null;
   }
   const stmt = eff.stmt;
+  if (stmt.prov === "measured" && !allowMeasuredRewrite) return null;
   const owner = project.layers.get(eff.layer);
   if (owner === undefined) return null;
+
+  const demote = stmt.prov === "measured";
   if (eff.layer === branch) {
-    // Force-break re-tapes a measured param: keep [measured], refresh date optional.
-    const updated =
-      forceBreak && stmt.prov === "measured"
-        ? {
-            ...stmt,
-            value: newValue,
-            date: new Date().toISOString().slice(0, 10),
-          }
-        : { ...stmt, value: newValue };
+    const updated: ParamStmt | SetStmt = demote
+      ? { ...stmt, value: newValue, prov: "approximated", date: undefined }
+      : { ...stmt, value: newValue };
     return [
       {
         kind: "replace-line",
@@ -271,20 +273,19 @@ function paramEditFor(
     ];
   }
   const isRoot = project.layers.get(branch)!.parsed.header.parent === null;
+  const prov = demote
+    ? isRoot
+      ? "approximated"
+      : "designed"
+    : isRoot
+      ? stmt.prov
+      : "designed";
   const setStmt: SetStmt = {
     kind: "set",
     name: param,
     value: newValue,
-    prov: forceBreak && stmt.prov === "measured"
-      ? "measured"
-      : isRoot
-        ? stmt.prov
-        : "designed",
+    prov,
     was: stmt.value,
-    date:
-      forceBreak && stmt.prov === "measured"
-        ? new Date().toISOString().slice(0, 10)
-        : undefined,
     loc: { file: "", line: 0 },
     leadingComments: [],
   };
@@ -295,6 +296,258 @@ function paramEditFor(
       lines: [printStmt(setStmt)],
     },
   ];
+}
+
+/** Drop meases that pin any of the given junctions (drag ≠ tape). */
+function stripMeasesTouching(
+  project: Project,
+  branch: string,
+  pipeline: Pipeline,
+  junctions: string[],
+): { edits: TextEdit[]; removed: string[] } {
+  const jset = new Set(junctions);
+  const edits: TextEdit[] = [];
+  const removed: string[] = [];
+  for (const [key, eff] of pipeline.resolved.effective) {
+    if (eff.stmt.kind !== "meas") continue;
+    if (!jset.has(eff.stmt.a) && !jset.has(eff.stmt.b)) continue;
+    removed.push(key);
+    if (eff.layer === branch && eff.expandedFrom === undefined) {
+      edits.push({
+        kind: "replace-line",
+        file: project.layers.get(branch)!.file,
+        line: eff.stmt.loc.line,
+        newText: "",
+      });
+    } else {
+      edits.push({
+        kind: "append",
+        file: project.layers.get(branch)!.file,
+        lines: [`delete ${key}`],
+      });
+    }
+  }
+  return { edits, removed };
+}
+
+const STALE_MEAS_TOL = 1 / 16; // inches
+
+/**
+ * Safety net after any drag: a drag is not a re-tape.
+ *
+ * If a wall's **solved centerline length** changed and that wall was backed by
+ * a measured param or meas, invalidate that measurement (demote param /
+ * remove meas). Same if a measured param's authored value was rewritten but
+ * still marked measured.
+ */
+function finalizeDragEdits(
+  project: Project,
+  branch: string,
+  before: Pipeline,
+  edits: TextEdit[],
+  _junctions: string[],
+): { edits: TextEdit[]; demoted: string[] } {
+  if (edits.length === 0) return { edits, demoted: [] };
+
+  const nextProj = applyEdits(project, edits);
+  const pipe = resolveAndSolve(layerMap(nextProj), branch);
+  const demoted: string[] = [];
+  const fix: TextEdit[] = [];
+
+  // Wall lengths before the drag
+  const lenBefore = new Map<string, number>();
+  for (const [key, eff] of before.resolved.effective) {
+    if (eff.stmt.kind !== "wall") continue;
+    const wv = wallView(before, key);
+    if (wv !== null) lenBefore.set(key, wv.lengthInches);
+  }
+
+  // Walls whose centerline length changed
+  const lengthChanged = new Set<string>();
+  for (const [key, eff] of pipe.resolved.effective) {
+    if (eff.stmt.kind !== "wall") continue;
+    const wv = wallView(pipe, key);
+    if (wv === null) continue;
+    const prev = lenBefore.get(key);
+    if (prev === undefined) continue;
+    if (Math.abs(wv.lengthInches - prev) > STALE_MEAS_TOL) lengthChanged.add(key);
+  }
+
+  // Param → walls with sole length binding to that param
+  const paramWalls = new Map<string, string[]>();
+  for (const [, eff] of pipe.resolved.effective) {
+    if (eff.stmt.kind !== "length") continue;
+    const terms = eff.stmt.expr.terms;
+    const first = terms[0];
+    if (terms.length !== 1 || first === undefined || first.kind !== "ref" || first.sign !== 1) {
+      continue;
+    }
+    const list = paramWalls.get(first.name) ?? [];
+    list.push(eff.stmt.wall);
+    paramWalls.set(first.name, list);
+  }
+
+  // Demote measured params that (a) had their value rewritten, or (b) own a
+  // wall whose centerline length changed under this drag.
+  for (const [key, eff] of before.resolved.effective) {
+    if (eff.stmt.kind !== "param" && eff.stmt.kind !== "set") continue;
+    if (eff.stmt.prov !== "measured") continue;
+    const afterEff = pipe.resolved.effective.get(key);
+    if (afterEff === undefined) continue;
+    if (afterEff.stmt.kind !== "param" && afterEff.stmt.kind !== "set") continue;
+    const afterStmt = afterEff.stmt;
+
+    const valueChanged = afterStmt.value !== eff.stmt.value;
+    const ownsChangedWall = (paramWalls.get(key) ?? []).some((w) =>
+      lengthChanged.has(w),
+    );
+
+    if (afterStmt.prov !== "measured") {
+      if (valueChanged || ownsChangedWall) demoted.push(key);
+      continue;
+    }
+    if (!valueChanged && !ownsChangedWall) continue;
+
+    // Pick new value: if a bound wall length changed, use that length.
+    let newValue = afterStmt.value;
+    for (const wall of paramWalls.get(key) ?? []) {
+      if (!lengthChanged.has(wall)) continue;
+      const wv = wallView(pipe, wall);
+      if (wv !== null) {
+        newValue = s64FromInches(wv.lengthInches);
+        break;
+      }
+    }
+    if (valueChanged && !ownsChangedWall) newValue = afterStmt.value;
+
+    const demotedStmt =
+      afterStmt.kind === "param"
+        ? ({
+            ...afterStmt,
+            value: newValue,
+            prov: "approximated" as const,
+            date: undefined,
+          } satisfies ParamStmt)
+        : ({
+            ...afterStmt,
+            value: newValue,
+            prov: "approximated" as const,
+            date: undefined,
+          } satisfies SetStmt);
+    if (afterEff.layer === branch && afterEff.expandedFrom === undefined) {
+      fix.push({
+        kind: "replace-line",
+        file: nextProj.layers.get(branch)!.file,
+        line: afterStmt.loc.line,
+        newText: printStmt(demotedStmt),
+      });
+    } else {
+      fix.push({
+        kind: "append",
+        file: nextProj.layers.get(branch)!.file,
+        lines: [printStmt(demotedStmt)],
+      });
+    }
+    demoted.push(key);
+  }
+
+  // Remove meases that (a) no longer match geometry, or (b) span a wall whose
+  // length changed (same endpoints as a changed wall).
+  for (const [key, eff] of pipe.resolved.effective) {
+    if (eff.stmt.kind !== "meas") continue;
+    const a = junctionPos(pipe.solution, eff.stmt.a);
+    const b = junctionPos(pipe.solution, eff.stmt.b);
+    if (a === null || b === null) continue;
+    const dist = Math.hypot(b.x - a.x, b.y - a.y);
+    const taped = eff.stmt.value / 64;
+    const distMismatch = Math.abs(dist - taped) > STALE_MEAS_TOL;
+
+    // Wall with same two endpoints whose length changed
+    let spansChangedWall = false;
+    for (const w of lengthChanged) {
+      const we = pipe.resolved.effective.get(w);
+      if (we?.stmt.kind !== "wall") continue;
+      const { from, to } = we.stmt;
+      if (
+        (from === eff.stmt.a && to === eff.stmt.b) ||
+        (from === eff.stmt.b && to === eff.stmt.a)
+      ) {
+        spansChangedWall = true;
+        break;
+      }
+    }
+    // Also: meas endpoints are exactly the ends of a changed wall
+    if (!spansChangedWall) {
+      for (const w of lengthChanged) {
+        const we = before.resolved.effective.get(w);
+        if (we?.stmt.kind !== "wall") continue;
+        if (
+          (we.stmt.from === eff.stmt.a && we.stmt.to === eff.stmt.b) ||
+          (we.stmt.from === eff.stmt.b && we.stmt.to === eff.stmt.a)
+        ) {
+          spansChangedWall = true;
+          break;
+        }
+      }
+    }
+
+    // Meas touches a junction that moved (any wall endpoint that moved enough)
+    let endpointMoved = false;
+    for (const jName of [eff.stmt.a, eff.stmt.b]) {
+      const pb = junctionPos(before.solution, jName);
+      const pa = junctionPos(pipe.solution, jName);
+      if (pb === null || pa === null) continue;
+      if (Math.hypot(pa.x - pb.x, pa.y - pb.y) > STALE_MEAS_TOL) {
+        endpointMoved = true;
+        break;
+      }
+    }
+
+    if (!distMismatch && !spansChangedWall && !endpointMoved) continue;
+
+    demoted.push(key);
+    if (eff.layer === branch && eff.expandedFrom === undefined) {
+      fix.push({
+        kind: "replace-line",
+        file: nextProj.layers.get(branch)!.file,
+        line: eff.stmt.loc.line,
+        newText: "",
+      });
+    } else {
+      fix.push({
+        kind: "append",
+        file: nextProj.layers.get(branch)!.file,
+        lines: [`delete ${key}`],
+      });
+    }
+  }
+
+  const all = fix.length > 0 ? [...edits, ...fix] : [...edits];
+  return { edits: all, demoted: [...new Set(demoted)] };
+}
+
+function withFinalizedDrag(
+  project: Project,
+  branch: string,
+  before: Pipeline,
+  proposal: MoveProposal,
+  junctions: string[],
+): MoveProposal {
+  if (proposal.kind === "refusal") return proposal;
+  if (proposal.edits.length === 0) return proposal;
+  const { edits, demoted } = finalizeDragEdits(
+    project,
+    branch,
+    before,
+    proposal.edits,
+    junctions,
+  );
+  const broke = [...new Set([...(proposal.broke ?? []), ...demoted])];
+  return {
+    ...proposal,
+    edits,
+    broke: broke.length > 0 ? broke : undefined,
+  };
 }
 
 /** Single-param projection score: how much of `delta` lies along sensitivity `s`. */
@@ -447,15 +700,15 @@ function buildParamEdits(
     }
     const stmt = eff.stmt;
     const newValue = stmt.value + s64FromInches(dp);
-    const breaking = forceBreak && stmt.prov === "measured";
-    const e = paramEditFor(project, branch, pipeline, s.param, newValue, breaking);
+    // Measured only rewritable under force-break; always demoted when rewritten.
+    const e = paramEditFor(project, branch, pipeline, s.param, newValue, forceBreak);
     if (e === null) continue;
     edits.push(...e);
     if (primary === "") {
       primary = s.param;
       primaryValue = newValue;
     }
-    if (breaking) broke.push(s.param);
+    if (stmt.prov === "measured") broke.push(s.param);
   }
   if (edits.length === 0 || primary === "") return null;
   return { edits, primary, primaryValue, broke };
@@ -593,7 +846,9 @@ export function proposeMove(
     forceBreak,
     (edits) => verifyMove(project, edits, branch, junction, targetIn),
   );
-  if (paramHit !== null) return paramHit;
+  if (paramHit !== null) {
+    return withFinalizedDrag(project, branch, pipeline, paramHit, [junction]);
+  }
 
   // Translating a rect room: dragging its at:-corner (sw) moves the room by
   // rewriting `at:`. Any corner works when the room's dimensions offer no
@@ -638,7 +893,13 @@ export function proposeMove(
                 },
               ];
         if (verifyMove(project, edits, branch, junction, targetIn)) {
-          return { kind: "room-move", room: roomKey, edits, verified: true };
+          return withFinalizedDrag(
+            project,
+            branch,
+            pipeline,
+            { kind: "room-move", room: roomKey, edits, verified: true },
+            [junction],
+          );
         }
       }
     }
@@ -657,13 +918,19 @@ export function proposeMove(
       sketchEdits.length > 0 &&
       verifyMove(project, sketchEdits, branch, junction, targetIn)
     ) {
-      return { kind: "sketch-edit", junction, edits: sketchEdits, verified: true };
+      return withFinalizedDrag(
+        project,
+        branch,
+        pipeline,
+        { kind: "sketch-edit", junction, edits: sketchEdits, verified: true },
+        [junction],
+      );
     }
   }
 
   // Force-break: ignore FD sensitivity (unreliable under hard locks). Drive
   // geometry from topology — pin the junction and re-tape every incident wall
-  // length binding + meas so the drop position is the new hard intent.
+  // length binding; demote measured params; drop incident meases.
   if (forceBreak) {
     const forced = forceBreakPinJunction(
       project,
@@ -673,7 +940,9 @@ export function proposeMove(
       target,
       targetIn,
     );
-    if (forced !== null) return forced;
+    if (forced !== null) {
+      return withFinalizedDrag(project, branch, pipeline, forced, [junction]);
+    }
   }
 
   // Locked. Cite what binds it.
@@ -757,11 +1026,10 @@ function forceBreakPinJunction(
 ): MoveProposal | null {
   const edits: TextEdit[] = [...junctionSketchEdits(project, branch, pipeline, junction, target)];
   const broke: string[] = [];
-  const today = new Date().toISOString().slice(0, 10);
 
-  // Incident walls: re-tape length bindings. Prefer axis-aligned span
-  // (|Δx| or |Δy|) so dragging a rect corner re-tapes width/depth to the
-  // drop coords — not the hypotenuse to a still-old opposite end.
+  // Incident walls: rewrite length-bound params to the drop geometry.
+  // Prefer axis-aligned span (|Δx| / |Δy|) so rect corners re-set width/depth
+  // cleanly. Measured params are demoted to approximated (drag ≠ tape).
   const paramTargets = new Map<string, S64>();
   for (const [, eff] of pipeline.resolved.effective) {
     if (eff.stmt.kind !== "wall") continue;
@@ -789,47 +1057,26 @@ function forceBreakPinJunction(
     paramTargets.set(first.name, s64FromInches(newLen));
   }
   for (const [param, value] of paramTargets) {
+    const was = pipeline.resolved.effective.get(param);
     const pe = paramEditFor(project, branch, pipeline, param, value, true);
     if (pe === null) continue;
     edits.push(...pe);
-    broke.push(param);
-  }
-
-  // Incident meases: re-tape to new distance.
-  for (const [key, eff] of pipeline.resolved.effective) {
-    if (eff.stmt.kind !== "meas") continue;
-    if (eff.stmt.a !== junction && eff.stmt.b !== junction) continue;
-    const other = eff.stmt.a === junction ? eff.stmt.b : eff.stmt.a;
-    const otherPos = junctionPos(pipeline.solution, other);
-    if (otherPos === null) continue;
-    const newDist = Math.hypot(targetIn.x - otherPos.x, targetIn.y - otherPos.y);
-    const updated: MeasStmt = {
-      ...eff.stmt,
-      value: s64FromInches(newDist),
-      date: today,
-      ref: undefined,
-    };
-    broke.push(key);
-    if (eff.layer === branch && eff.expandedFrom === undefined) {
-      edits.push({
-        kind: "replace-line",
-        file: project.layers.get(branch)!.file,
-        line: eff.stmt.loc.line,
-        newText: printStmt(updated),
-      });
-    } else {
-      edits.push({
-        kind: "append",
-        file: project.layers.get(branch)!.file,
-        lines: [printStmt(updated)],
-      });
+    if (
+      was &&
+      (was.stmt.kind === "param" || was.stmt.kind === "set") &&
+      was.stmt.prov === "measured"
+    ) {
+      broke.push(param);
     }
   }
 
+  const strip = stripMeasesTouching(project, branch, pipeline, [junction]);
+  edits.push(...strip.edits);
+  broke.push(...strip.removed);
+
   if (edits.length === 0) return null;
 
-  // Always commit: pin + re-tapes encode the user's intent; residual hard
-  // conflicts (axis, stacks, other meases) surface in Review.
+  // Pin + demoted params encode the drag; dropped meases no longer claim tape truth.
   return {
     kind: "sketch-edit",
     junction,
@@ -882,13 +1129,19 @@ export function proposeMoveWall(
       verifyWallMove(project, edits, branch, from, to, midT, deltaInches),
   );
   if (paramHit !== null) {
-    return {
-      kind: "wall-move",
-      wall: wallName,
-      edits: paramHit.edits,
-      verified: true,
-      broke: paramHit.kind === "param-edit" ? paramHit.broke : undefined,
-    };
+    return withFinalizedDrag(
+      project,
+      branch,
+      pipeline,
+      {
+        kind: "wall-move",
+        wall: wallName,
+        edits: paramHit.edits,
+        verified: true,
+        broke: paramHit.broke,
+      },
+      [from, to],
+    );
   }
 
   // Room translate: both ends from the same rect room.
@@ -929,7 +1182,13 @@ export function proposeMoveWall(
                 },
               ];
         if (verifyWallMove(project, edits, branch, from, to, midT, deltaInches)) {
-          return { kind: "wall-move", wall: wallName, edits, verified: true };
+          return withFinalizedDrag(
+            project,
+            branch,
+            pipeline,
+            { kind: "wall-move", wall: wallName, edits, verified: true },
+            [from, to],
+          );
         }
       }
     }
@@ -957,13 +1216,19 @@ export function proposeMoveWall(
           ...(moveA.broke ?? []),
           ...(moveB.broke ?? []),
         ];
-        return {
-          kind: "wall-move",
-          wall: wallName,
-          edits,
-          verified: true,
-          broke: broke.length > 0 ? [...new Set(broke)] : undefined,
-        };
+        return withFinalizedDrag(
+          project,
+          branch,
+          pipeline,
+          {
+            kind: "wall-move",
+            wall: wallName,
+            edits,
+            verified: true,
+            broke: broke.length > 0 ? [...new Set(broke)] : undefined,
+          },
+          [from, to],
+        );
       }
     }
   }
@@ -975,39 +1240,52 @@ export function proposeMoveWall(
     if (
       verifyWallMove(project, moveOne.edits, branch, from, to, midT, deltaInches)
     ) {
-      return {
-        kind: "wall-move",
-        wall: wallName,
-        edits: moveOne.edits,
-        verified: true,
-        broke: moveOne.broke,
-      };
+      return withFinalizedDrag(
+        project,
+        branch,
+        pipeline,
+        {
+          kind: "wall-move",
+          wall: wallName,
+          edits: moveOne.edits,
+          verified: true,
+          broke: moveOne.broke,
+        },
+        [from, to],
+      );
     }
   }
 
   // Force-break: pin both endpoints to translated positions via topology re-tape.
   if (forceBreak) {
-    const moveA = proposeMove(project, branch, from, aTarget, { forceBreak: true });
-    if (moveA.kind !== "refusal" && moveA.edits.length > 0) {
-      const mid = applyEdits(project, moveA.edits);
-      const moveB = proposeMove(mid, branch, to, bTarget, { forceBreak: true });
+    const moveAf = proposeMove(project, branch, from, aTarget, { forceBreak: true });
+    if (moveAf.kind !== "refusal" && moveAf.edits.length > 0) {
+      const mid = applyEdits(project, moveAf.edits);
+      const moveBf = proposeMove(mid, branch, to, bTarget, { forceBreak: true });
       const edits = [
-        ...moveA.edits,
-        ...(moveB.kind !== "refusal" ? moveB.edits : []),
+        ...moveAf.edits,
+        ...(moveBf.kind !== "refusal" ? moveBf.edits : []),
       ];
       const broke = [
-        ...(moveA.broke ?? []),
-        ...(moveB.kind !== "refusal" ? (moveB.broke ?? []) : []),
+        ...(moveAf.broke ?? []),
+        ...(moveBf.kind !== "refusal" ? (moveBf.broke ?? []) : []),
       ];
       if (edits.length > 0) {
-        const verified = verifyWallMove(project, edits, branch, from, to, midT, deltaInches);
-        return {
-          kind: "wall-move",
-          wall: wallName,
-          edits,
-          verified,
-          broke: broke.length > 0 ? [...new Set(broke)] : undefined,
-        };
+        if (verifyWallMove(project, edits, branch, from, to, midT, deltaInches)) {
+          return withFinalizedDrag(
+            project,
+            branch,
+            pipeline,
+            {
+              kind: "wall-move",
+              wall: wallName,
+              edits,
+              verified: true,
+              broke: broke.length > 0 ? [...new Set(broke)] : undefined,
+            },
+            [from, to],
+          );
+        }
       }
     }
   }

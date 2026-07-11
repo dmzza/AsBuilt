@@ -348,9 +348,9 @@ room k : rect(k.width, k.depth)
     expect(wallView(p, "k.north")!.lengthInches).toBeCloseTo(IN("13'"), 1);
   });
 
-  test("forceBreak (⌥): topology re-tape lands near drop; leftover fights go to Review", () => {
-    // Fully measured room + diagonal. Force-break NE to (14',12') re-tapes
-    // width+depth from axis spans and the diagonal to the new corner.
+  test("forceBreak (⌥): lands near drop; demotes measured params; drops meases", () => {
+    // Drag is not a tape reading: measured params become approximated, and
+    // incident meases are removed (meas cannot demote provenance).
     const src = `layer asbuilt
 
 walltype int_2x4 { thickness: 4 1/2" }
@@ -377,18 +377,21 @@ meas m_diag : dist(k.sw, k.ne) = 15'-7 1/2" [measured]
     expect(forced.kind).not.toBe("refusal");
     if (forced.kind === "refusal") return;
     expect(forced.verified).toBe(true);
-    expect(forced.broke?.length ?? 0).toBeGreaterThan(0);
+    expect(forced.broke).toEqual(expect.arrayContaining(["k.width", "k.depth", "m_diag"]));
     const next = applyEdits(project, forced.edits);
+    const text = next.files.get("asbuilt.abl")!;
+    expect(text).toMatch(/param k\.width = 14'-0" \[approximated\]/);
+    expect(text).toMatch(/param k\.depth = 12'-0" \[approximated\]/);
+    expect(text).not.toMatch(/meas m_diag/);
     const p = resolveAndSolve(layerMap(next), "asbuilt");
     const ne = junctionPos(p.solution, "k.ne")!;
-    // Should land close to the drop — not stuck at 12'×10'
-    expect(ne.x).toBeCloseTo(IN("14'"), 0); // within ~0.5"
+    expect(ne.x).toBeCloseTo(IN("14'"), 0);
     expect(ne.y).toBeCloseTo(IN("12'"), 0);
     expect(wallView(p, "k.north")!.lengthInches).toBeCloseTo(IN("14'"), 0);
     expect(wallView(p, "k.east")!.lengthInches).toBeCloseTo(IN("12'"), 0);
   });
 
-  test("forceBreak wall drag rewrites measured width", () => {
+  test("forceBreak wall drag demotes measured width to approximated", () => {
     const src = `layer asbuilt
 
 walltype int_2x4 { thickness: 4 1/2" }
@@ -399,9 +402,6 @@ param k.width = 12'-0" [measured]
 room k : rect(k.width, k.depth)
 `;
     const project = loadProject({ "asbuilt.abl": src });
-    const refused = proposeMoveWall(project, "asbuilt", "k.east", { x: 24, y: 0 });
-    // Without force, measured width locks a pure east translate of the east wall
-    // (resize). May refuse or room-move; either way force should rewrite width.
     const forced = proposeMoveWall(
       project,
       "asbuilt",
@@ -412,8 +412,103 @@ room k : rect(k.width, k.depth)
     expect(forced.kind).not.toBe("refusal");
     if (forced.kind === "refusal") return;
     const next = applyEdits(project, forced.edits);
+    const text = next.files.get("asbuilt.abl")!;
+    expect(text).toMatch(/param k\.width = .*\[approximated\]/);
+    expect(text).not.toMatch(/param k\.width = .*\[measured/);
     const p = resolveAndSolve(layerMap(next), "asbuilt");
     expect(wallView(p, "k.north")!.lengthInches).toBeCloseTo(IN("14'"), 1);
-    void refused;
+    // Effective provenance after resolve must not be measured
+    const w = p.resolved.effective.get("k.width");
+    expect(w?.stmt.kind === "param" || w?.stmt.kind === "set").toBe(true);
+    if (w?.stmt.kind === "param" || w?.stmt.kind === "set") {
+      expect(w.stmt.prov).toBe("approximated");
+    }
+  });
+
+  test("dragging a neighbor wall invalidates a measured free-wall centerline", () => {
+    // W1 measured via meas; drag dl.jog moves shared junction so W1 length
+    // no longer matches the tape — meas must be dropped / grade not measured.
+    const src = `layer asbuilt
+
+walltype int_2x4 { thickness: 4 1/2" }
+
+junction a ~(0", 0")
+junction b ~(8'-0", 0")
+junction c ~(0", 4'-0")
+
+wall jog { from: a, to: b, type: int_2x4 }
+wall w11 { from: a, to: c, type: int_2x4 }
+
+axis jog h
+axis w11 v
+
+meas m_w11 : dist(a, c) = 4'-0" [measured]
+`;
+    let project = loadProject({ "asbuilt.abl": src });
+    let p = resolveAndSolve(layerMap(project), "asbuilt");
+    expect(wallView(p, "w11")!.lengthInches).toBeCloseTo(IN("4'"), 2);
+
+    // Move jog's `a` end north by dragging the wall (and/or endpoint motion).
+    const drag = proposeMove(project, "asbuilt", "a", {
+      x: 0,
+      y: s64FromFeet(1),
+    });
+    expect(drag.kind).not.toBe("refusal");
+    if (drag.kind === "refusal") return;
+    project = applyEdits(project, drag.edits);
+    p = resolveAndSolve(layerMap(project), "asbuilt");
+    // Stale measured span must not remain — endpoint moved under the tape.
+    expect(p.resolved.effective.has("m_w11")).toBe(false);
+    expect(project.files.get("asbuilt.abl")).not.toMatch(/meas m_w11/);
+    // w11 length is free now (no hard 4' claim)
+    expect(wallView(p, "w11")!.lengthInches).toBeCloseTo(IN("3'"), 1);
+  });
+
+  test("invariant: no drag edit may leave a changed param still [measured]", () => {
+    const src = `layer asbuilt
+
+walltype int_2x4 { thickness: 4 1/2" }
+
+param k.depth = 10'-0" [measured]
+param k.width = 12'-0" [measured]
+
+room k : rect(k.width, k.depth)
+
+meas m_diag : dist(k.sw, k.ne) = 15'-7 1/2" [measured]
+`;
+    const project = loadProject({ "asbuilt.abl": src });
+    const before = new Map(
+      [...resolveAndSolve(layerMap(project), "asbuilt").resolved.effective]
+        .filter(([, e]) => e.stmt.kind === "param" || e.stmt.kind === "set")
+        .map(([k, e]) => {
+          const s = e.stmt as { value: number; prov: string };
+          return [k, { value: s.value, prov: s.prov }] as const;
+        }),
+    );
+    for (const forceBreak of [false, true]) {
+      for (const delta of [
+        { x: 24, y: 0 },
+        { x: 0, y: 12 },
+        { x: 18, y: 18 },
+      ]) {
+        const prop = proposeMoveWall(project, "asbuilt", "k.east", delta, {
+          forceBreak,
+        });
+        if (prop.kind === "refusal" || prop.edits.length === 0) continue;
+        const next = applyEdits(project, prop.edits);
+        const after = resolveAndSolve(layerMap(next), "asbuilt");
+        for (const [key, was] of before) {
+          if (was.prov !== "measured") continue;
+          const eff = after.resolved.effective.get(key);
+          if (eff?.stmt.kind !== "param" && eff?.stmt.kind !== "set") continue;
+          if (eff.stmt.value === was.value) continue;
+          // Value changed → must not still claim measured
+          expect(
+            eff.stmt.prov,
+            `${key} changed under forceBreak=${forceBreak} delta=${JSON.stringify(delta)}`,
+          ).not.toBe("measured");
+        }
+      }
+    }
   });
 });
