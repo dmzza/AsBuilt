@@ -11,12 +11,15 @@ export {
 } from "./gold";
 export { writeReviewReport } from "./report";
 export { createVisionClient } from "./vision/client";
+export { deriveVisionStatus, visionStatusTone } from "./vision/status";
 export { extractDimensions } from "./dims/extract";
 export { matchDimensions } from "./dims/match";
 export {
-  estimateSimilarityTransform,
-  warpCandidateToReference,
-  onionSkin,
-  applyTransform,
-} from "./align";
-export { compareLayout } from "./layout";
+  casesRoot,
+  listCaseDirs,
+  summarizeCase,
+  runCase,
+  slugify,
+  loadMeta,
+  saveMeta,
+} from "./runCase";

@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>AsBuilt Eval</title>
+<style>
+  :root {
+    --bg: #12110f;
+    --panel: #1a1916;
+    --line: #333029;
+    --text: #f0eee6;
+    --muted: #8a8678;
+    --accent: #6b9fff;
+    --ok: #3ecf8e;
+    --warn: #e2a350;
+    --bad: #e86a5c;
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); min-height: 100vh; }
+  header {
+    display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+    padding: 1rem 1.5rem; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  h1 { font-size: 1rem; letter-spacing: 0.06em; text-transform: uppercase; margin: 0; font-weight: 600; }
+  header p { margin: 0; color: var(--muted); font-size: 0.85rem; }
+  .spacer { flex: 1; }
+  button, .btn {
+    background: #2a2824; color: var(--text); border: 1px solid #444038;
+    padding: 0.45rem 0.85rem; border-radius: 5px; cursor: pointer; font-size: 0.85rem;
+    text-decoration: none; display: inline-flex; align-items: center; gap: 0.35rem;
+  }
+  button.primary, .btn.primary { background: #1f3d2e; border-color: #3a6b52; color: #c8f0d8; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+  .grid { display: grid; gap: 0.85rem; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 1rem 1.15rem; display: grid; grid-template-columns: 1fr auto; gap: 0.75rem; align-items: center;
+  }
+  .card h2 { margin: 0; font-size: 1rem; font-weight: 600; }
+  .meta { color: var(--muted); font-size: 0.8rem; margin-top: 0.25rem; display: flex; flex-wrap: wrap; gap: 0.55rem; }
+  .pill {
+    border: 1px solid #444; border-radius: 999px; padding: 0.05rem 0.5rem; font-size: 0.72rem;
+  }
+  .pill.ok { color: var(--ok); border-color: #2a5a40; }
+  .pill.warn { color: var(--warn); border-color: #6a4a20; }
+  .pill.bad { color: var(--bad); border-color: #6a3030; background: #2a1515; font-weight: 600; }
+  .actions { display: flex; gap: 0.4rem; flex-wrap: wrap; justify-content: flex-end; }
+  .score b { color: var(--accent); font-variant-numeric: tabular-nums; }
+  .empty { color: var(--muted); padding: 2rem; text-align: center; border: 1px dashed var(--line); border-radius: 8px; }
+  dialog {
+    border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text);
+    padding: 0; width: min(560px, 94vw); max-height: 90vh;
+  }
+  dialog::backdrop { background: rgba(0,0,0,0.65); }
+  .dlg { padding: 1.25rem 1.35rem 1.4rem; }
+  .dlg h2 { margin: 0 0 0.35rem; font-size: 1.05rem; }
+  .dlg .hint { color: var(--muted); font-size: 0.82rem; margin: 0 0 1rem; line-height: 1.4; }
+  label.field { display: block; font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 0.85rem 0 0.35rem; }
+  input[type=text] {
+    width: 100%; background: #0d0c0a; color: var(--text); border: 1px solid #444038;
+    border-radius: 5px; padding: 0.5rem 0.65rem; font-size: 0.95rem;
+  }
+  .drop {
+    border: 1.5px dashed #555048; border-radius: 8px; padding: 1.25rem;
+    text-align: center; color: var(--muted); font-size: 0.88rem; cursor: pointer;
+    background: #141311; transition: border-color 0.15s, background 0.15s;
+  }
+  .drop:hover, .drop.drag { border-color: var(--accent); background: #181c28; color: var(--text); }
+  .drop.has { border-style: solid; border-color: #3a6b52; color: var(--ok); }
+  .drop input { display: none; }
+  .row-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1.25rem; }
+  #toast {
+    position: fixed; bottom: 1.25rem; left: 50%; transform: translateX(-50%);
+    background: #1f3d2e; color: #c8f0d8; border: 1px solid #3a6b52;
+    padding: 0.55rem 1rem; border-radius: 6px; font-size: 0.85rem;
+    opacity: 0; pointer-events: none; transition: opacity 0.2s; z-index: 50; max-width: 90vw;
+  }
+  #toast.show { opacity: 1; }
+  #toast.err { background: #3d1f1f; border-color: #6a4040; color: #f0d0d0; }
+  .busy { opacity: 0.6; pointer-events: none; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>AsBuilt Eval</h1>
+    <p>Drop a drawing, add a candidate, score, review — no folder wrangling.</p>
+  </div>
+  <div class="spacer"></div>
+  <button type="button" class="primary" id="btn-new">New eval</button>
+  <button type="button" id="btn-refresh">Refresh</button>
+</header>
+<main>
+  <div class="grid" id="cases">
+    <div class="empty">Loading…</div>
+  </div>
+</main>
+
+<dialog id="new-dlg">
+  <form class="dlg" id="new-form">
+    <h2>New eval</h2>
+    <p class="hint">Upload your hand drawing as the reference. Then either drop an AsBuilt <code>.abl</code> project (or folder of them) or another plan image as the candidate.</p>
+
+    <label class="field">Name</label>
+    <input type="text" id="case-name" placeholder="auto from drawing filename" autocomplete="off"/>
+
+    <label class="field">Reference drawing</label>
+    <div class="drop" id="drop-ref" tabindex="0">
+      <div class="label">Drop PNG/JPG here — or click to choose</div>
+      <input type="file" id="file-ref" accept="image/png,image/jpeg,image/webp,image/gif"/>
+    </div>
+
+    <label class="field">Candidate</label>
+    <div class="drop" id="drop-cand" tabindex="0">
+      <div class="label">Drop candidate PNG, or .abl file(s) / project folder</div>
+      <input type="file" id="file-cand" accept="image/png,image/jpeg,.abl,application/json" multiple/>
+    </div>
+    <p class="hint" id="cand-hint" style="margin-top:0.4rem">Waiting for a candidate…</p>
+
+    <label class="field" style="display:flex;align-items:center;gap:0.5rem;text-transform:none;letter-spacing:0;font-size:0.85rem;color:var(--text);cursor:pointer">
+      <input type="checkbox" id="run-now" checked/>
+      Score immediately after creating
+    </label>
+
+    <div class="row-actions">
+      <button type="button" id="btn-cancel">Cancel</button>
+      <button type="submit" class="primary" id="btn-create">Create</button>
+    </div>
+  </form>
+</dialog>
+<div id="toast"></div>
+
+<script>
+const casesEl = document.getElementById('cases');
+const dlg = document.getElementById('new-dlg');
+const toastEl = document.getElementById('toast');
+
+let refFile = null;
+let candMode = null; // 'image' | 'abl'
+let candImage = null;
+let ablFiles = []; // { relativePath, file }
+
+function toast(msg, err) {
+  toastEl.textContent = msg;
+  toastEl.className = err ? 'show err' : 'show';
+  clearTimeout(toastEl._t);
+  toastEl._t = setTimeout(() => { toastEl.className = ''; }, 3200);
+}
+
+function pct(x) { return ((x ?? 0) * 100).toFixed(1) + '%'; }
+
+async function loadCases() {
+  const r = await fetch('/api/cases');
+  const j = await r.json();
+  if (!j.cases?.length) {
+    casesEl.innerHTML = '<div class="empty">No evals yet. Click <b>New eval</b> and drop a drawing.</div>';
+    return;
+  }
+  casesEl.innerHTML = j.cases.map(c => {
+    const score = c.lastScore
+      ? `<span class="score">overall <b>${pct(c.lastScore.overall)}</b> · dims <b>${pct(c.lastScore.dims)}</b> · spans <b>${pct(c.lastScore.spans)}</b></span>`
+      : `<span class="pill warn">not scored</span>`;
+    const vs = c.visionStatus;
+    let aiPill = '';
+    if (vs) {
+      const tone = vs.availability === 'used'
+        ? 'ok'
+        : vs.availability === 'partial' || vs.availability === 'disabled' || vs.availability === 'gold_only'
+          ? 'warn'
+          : 'bad';
+      aiPill = `<span class="pill ${tone}" title="${escapeHtml(vs.summary)}">${escapeHtml(vs.label)}</span>`;
+    }
+    return `<article class="card" data-id="${c.id}">
+      <div>
+        <h2>${escapeHtml(c.title)}</h2>
+        <div class="meta">
+          <span class="pill">${escapeHtml(c.id)}</span>
+          ${c.hasProject ? '<span class="pill ok">abl project</span>' : ''}
+          ${c.hasCandidate ? '<span class="pill ok">candidate</span>' : '<span class="pill warn">no candidate</span>'}
+          ${c.hasReferenceGold ? '<span class="pill ok">ref gold</span>' : '<span class="pill">no ref gold</span>'}
+          ${aiPill}
+          ${score}
+        </div>
+      </div>
+      <div class="actions">
+        <button type="button" data-act="score" data-id="${c.id}">${c.hasReview ? 'Re-score' : 'Score'}</button>
+        ${c.hasReview
+          ? `<a class="btn primary" href="/review/${encodeURIComponent(c.id)}/">Review</a>`
+          : `<button type="button" data-act="score-review" data-id="${c.id}" class="primary">Score &amp; review</button>`}
+      </div>
+    </article>`;
+  }).join('');
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function wireDrop(el, fileInput, onFiles) {
+  const setHas = (on) => el.classList.toggle('has', on);
+  el.addEventListener('click', () => fileInput.click());
+  el.addEventListener('dragover', (e) => { e.preventDefault(); el.classList.add('drag'); });
+  el.addEventListener('dragleave', () => el.classList.remove('drag'));
+  el.addEventListener('drop', (e) => {
+    e.preventDefault();
+    el.classList.remove('drag');
+    onFiles(e.dataTransfer.files, e.dataTransfer.items);
+    setHas(true);
+  });
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files?.length) {
+      onFiles(fileInput.files, null);
+      setHas(true);
+    }
+  });
+}
+
+function isImage(f) {
+  return f.type.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(f.name);
+}
+function isAbl(f) {
+  return f.name.toLowerCase().endsWith('.abl');
+}
+
+wireDrop(document.getElementById('drop-ref'), document.getElementById('file-ref'), (files) => {
+  const f = [...files].find(isImage);
+  if (!f) { toast('Need an image for the reference drawing', true); return; }
+  refFile = f;
+  document.querySelector('#drop-ref .label').textContent = f.name;
+  const nameInput = document.getElementById('case-name');
+  if (!nameInput.value) nameInput.placeholder = f.name.replace(/\.[^.]+$/, '');
+});
+
+wireDrop(document.getElementById('drop-cand'), document.getElementById('file-cand'), async (files, items) => {
+  const list = [...files];
+  const images = list.filter(isImage);
+  const abls = list.filter(isAbl);
+  const hint = document.getElementById('cand-hint');
+
+  if (abls.length) {
+    candMode = 'abl';
+    candImage = null;
+    // Preserve relative paths when the browser provides webkitRelativePath
+    ablFiles = abls.map(f => ({
+      relativePath: f.webkitRelativePath || f.name,
+      file: f,
+    }));
+    document.querySelector('#drop-cand .label').textContent = `${abls.length} .abl file(s)`;
+    hint.textContent = 'Will render AsBuilt project as the candidate.';
+    return;
+  }
+  if (images.length) {
+    candMode = 'image';
+    ablFiles = [];
+    candImage = images[0];
+    document.querySelector('#drop-cand .label').textContent = candImage.name;
+    hint.textContent = 'Using uploaded image as candidate.';
+    return;
+  }
+  toast('Drop a PNG/JPG candidate or .abl file(s)', true);
+});
+
+// Allow folder pick for abl projects via webkitdirectory on secondary gesture
+document.getElementById('drop-cand').addEventListener('keydown', (e) => {
+  if (e.key === 'f') {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.webkitdirectory = true;
+    input.multiple = true;
+    input.onchange = () => {
+      const abls = [...(input.files || [])].filter(isAbl);
+      if (!abls.length) { toast('No .abl files in that folder', true); return; }
+      candMode = 'abl';
+      candImage = null;
+      ablFiles = abls.map(f => ({
+        relativePath: f.webkitRelativePath || f.name,
+        file: f,
+      }));
+      document.getElementById('drop-cand').classList.add('has');
+      document.querySelector('#drop-cand .label').textContent = `Folder · ${abls.length} .abl`;
+      document.getElementById('cand-hint').textContent = 'Will render AsBuilt project as the candidate.';
+    };
+    input.click();
+  }
+});
+
+document.getElementById('btn-new').onclick = () => {
+  refFile = null; candMode = null; candImage = null; ablFiles = [];
+  document.getElementById('case-name').value = '';
+  document.getElementById('case-name').placeholder = 'auto from drawing filename';
+  document.querySelector('#drop-ref .label').textContent = 'Drop PNG/JPG here — or click to choose';
+  document.querySelector('#drop-cand .label').textContent = 'Drop candidate PNG, or .abl file(s) / project folder';
+  document.getElementById('drop-ref').classList.remove('has');
+  document.getElementById('drop-cand').classList.remove('has');
+  document.getElementById('cand-hint').textContent = 'Tip: press F while focused on the candidate box to pick a whole project folder.';
+  document.getElementById('run-now').checked = true;
+  dlg.showModal();
+};
+document.getElementById('btn-cancel').onclick = () => dlg.close();
+document.getElementById('btn-refresh').onclick = () => loadCases();
+
+document.getElementById('new-form').onsubmit = async (e) => {
+  e.preventDefault();
+  if (!refFile) { toast('Add a reference drawing', true); return; }
+  if (!candMode) { toast('Add a candidate image or .abl project', true); return; }
+
+  const btn = document.getElementById('btn-create');
+  btn.disabled = true;
+
+  const toB64 = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const s = String(reader.result);
+      resolve(s.includes(',') ? s.split(',')[1] : s);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+
+  try {
+    toast('Creating…');
+    const body = {
+      name: document.getElementById('case-name').value.trim() || undefined,
+      referenceName: refFile.name,
+      referenceBase64: await toB64(refFile),
+      runNow: document.getElementById('run-now').checked,
+    };
+    if (candMode === 'image') {
+      body.candidateImageBase64 = await toB64(candImage);
+    } else {
+      body.ablFiles = [];
+      for (const a of ablFiles) {
+        body.ablFiles.push({
+          relativePath: a.relativePath,
+          base64: await toB64(a.file),
+        });
+      }
+    }
+
+    const r = await fetch('/api/cases', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    dlg.close();
+    if (j.error) toast(`Created ${j.id}, but score failed: ${j.error}`, true);
+    else toast(j.scored ? `Created & scored ${j.id}` : `Created ${j.id}`);
+    await loadCases();
+    if (j.hasReview && j.id) {
+      window.open(`/review/${encodeURIComponent(j.id)}/`, '_blank');
+    }
+  } catch (err) {
+    toast(String(err.message || err), true);
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+casesEl.addEventListener('click', async (e) => {
+  const t = e.target;
+  if (!(t instanceof HTMLElement)) return;
+  const act = t.dataset.act;
+  const id = t.dataset.id;
+  if (!act || !id) return;
+  if (act === 'score' || act === 'score-review') {
+    t.disabled = true;
+    toast(`Scoring ${id}…`);
+    try {
+      const r = await fetch(`/api/cases/${encodeURIComponent(id)}/score`, { method: 'POST' });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || r.statusText);
+      toast(`Scored ${id}: ${(j.overall * 100).toFixed(1)}% overall`);
+      await loadCases();
+      if (act === 'score-review') {
+        window.open(`/review/${encodeURIComponent(id)}/`, '_blank');
+      }
+    } catch (err) {
+      toast(String(err.message || err), true);
+    } finally {
+      t.disabled = false;
+    }
+  }
+});
+
+loadCases().catch((e) => toast(String(e), true));
+</script>
+</body>
+</html>

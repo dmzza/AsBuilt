@@ -39,7 +39,7 @@ export function createVisionClient(): VisionClient | null {
   if (!picked) return null;
 
   if (picked.provider === "anthropic") {
-    const client = new Anthropic();
+    const client = new Anthropic({ timeout: 30 * 60 * 1000 });
     return {
       provider: "anthropic",
       model: picked.model,
@@ -58,16 +58,43 @@ export function createVisionClient(): VisionClient | null {
           ),
           { type: "text", text: msg.prompt },
         ];
-        const res = await client.messages.create({
-          model: picked.model,
-          max_tokens: 8096,
-          system: msg.system,
-          messages: [{ role: "user", content }],
-        });
+        // Sonnet 5 defaults to adaptive thinking; thinking tokens count against
+        // max_tokens. Prefer enough headroom for large dim JSON payloads.
+        const maxTokens = Number(process.env.EVAL_VISION_MAX_TOKENS ?? 32000);
+        const effort = (process.env.EVAL_VISION_EFFORT ?? "medium") as
+          | "low"
+          | "medium"
+          | "high"
+          | "xhigh"
+          | "max";
+        // Structured JSON extraction is more reliable without adaptive thinking
+        // eating the output budget (default off; set EVAL_VISION_NO_THINKING=0 to enable).
+        const disableThinking = process.env.EVAL_VISION_NO_THINKING !== "0";
+        const res = await client.messages.create(
+          {
+            model: picked.model,
+            max_tokens: maxTokens,
+            system: msg.system,
+            messages: [{ role: "user", content }],
+            ...(disableThinking
+              ? { thinking: { type: "disabled" as const } }
+              : // @ts-expect-error SDK typings lag Sonnet 5 output_config
+                { output_config: { effort } }),
+          },
+          { timeout: 30 * 60 * 1000 },
+        );
         const text = res.content
           .filter((b) => b.type === "text")
           .map((b) => (b.type === "text" ? b.text : ""))
           .join("\n");
+        if (!text.trim()) {
+          const thinking = res.content.some((b) => b.type === "thinking");
+          throw new Error(
+            `Empty vision text (stop_reason=${res.stop_reason}, thinking=${thinking}, ` +
+              `out=${res.usage.output_tokens}/${maxTokens}). Raise EVAL_VISION_MAX_TOKENS, ` +
+              `lower EVAL_VISION_EFFORT, or set EVAL_VISION_NO_THINKING=1.`,
+          );
+        }
         return text;
       },
     };

@@ -1,0 +1,231 @@
+% 214 Maynard St - Living Room Corrected Floorplan.pdf, transcribed 2026-07-09.
+% Source drawing is dated 2025-04-09 (file date); used as the [measured] date
+% throughout. The PDF actually covers the whole floor level (TV Room, Kitchen,
+% two stair cores, half bath, closet, and the fireplace/bay living room), not
+% just the living room, so the whole level is modeled here.
+%
+% Assumptions worth checking against the original:
+%  - Wall thickness: the drawing only says "All walls are about 6-8" thick"
+%    with no ext/int distinction, so a single 7" walltype is used everywhere.
+%  - TV Room and Kitchen depths (north-south) are not dimensioned anywhere on
+%    the drawing; tv.depth is [approximated] and Kitchen's south wall is left
+%    fully unconstrained (derives from sketch position only).
+%  - The bay window's corner angles are not given (only the four segment
+%    lengths: 1'-6", 6'-4", 5'-1", 4'-8"), so those walls are NOT rectilinear;
+%    their junction positions are rough sketch hints and the angles are
+%    whatever the solver finds consistent with the lengths.
+%  - A conflicting reading is recorded faithfully (not averaged):
+%      dist(lr.nw, lr.sw): 19'-4" vs 17'-7" (fireplace-area depth check)
+%    Expect the checker to report this as CONFLICT/drift - that's correct,
+%    not a bug; see the summary for suspects.
+%  - The drawing also has a second apparent south-wall reading, 18'-1" + 4'-7"
+%    = 22'-8", against the 19'-4" used for dist(lr.sw, lr.se). It was NOT
+%    encoded: added alongside the west-wall conflict above, the two together
+%    over-constrain the same corner (lr.sw) enough that the solver fails to
+%    converge at all, rather than reporting a bounded conflict. It's plausible
+%    18'-1"+4'-7" is measured along a different (higher/interior) datum than
+%    the actual south wall; worth field-checking directly.
+%  - The half-bath/closet cluster has ~10 more small dimensions (2'-9", 7'-2",
+%    7'-5", 10', 17", 27", 32" x2, 19", 4'-9", 10'-7", a second 9'-4") that
+%    read as fixture clearances and door-swing radii rather than wall spans.
+%    They were not confidently attributable to specific corners and are not
+%    encoded as constraints; the rooms are dimensioned via 4'-10"/9'-4"
+%    (half bath) and 36"/3'-5" (closet) instead.
+%  - Both stair cores ("UP TO 3RD FL / DN TO 1ST FL" and the back stair by
+%    the bay) are modeled as approximate fixture footprints only, no treads.
+%  - Door/window sizes and positions are [approximated] (not dimensioned)
+%    except where a wall's own measured length was used directly.
+
+layer asbuilt
+
+walltype wall_std { thickness: 7" }
+
+% ---- params: every written dimension from the drawing -------------------
+
+param tv.width = 12'-8" [measured 2025-04-09]
+param k.width = 9'-9" [measured 2025-04-09]
+param jog.width = 3'-4" [measured 2025-04-09]
+param bic.width = 5'-4" [measured 2025-04-09]
+param lr.n_west = 4'-10" [measured 2025-04-09]
+param fp.depth = 1'-9" [measured 2025-04-09]
+param fp.width = 4'-8" [measured 2025-04-09]
+param lr.n_east = 5'-5" [measured 2025-04-09]
+param lr.n_far = 5'-1" [measured 2025-04-09]
+param bay.ret = 1'-6" [measured 2025-04-09]
+param bay.w1p = 6'-4" [measured 2025-04-09]
+param bay.w2p = 5'-1" [measured 2025-04-09]
+param bay.w3p = 4'-8" [measured 2025-04-09]
+param lr.se_drop = 4'-5" [measured 2025-04-09]
+param s2.width = 4'-7" [measured 2025-04-09]
+param s2.depth = 7'-7" [measured 2025-04-09]
+param hb.width = 4'-10" [measured 2025-04-09]
+param hb.depth = 9'-4" [measured 2025-04-09]
+param cl.width = 3'-0" [measured 2025-04-09]
+param cl.depth = 3'-5" [measured 2025-04-09]
+param tv.depth = 13'-0" [approximated]
+
+% ---- junctions ------------------------------------------------------------
+
+junction tv.nw ~(0'-0", 19'-4")
+junction tv.sw ~(0'-0", 6'-4")
+junction tv.se ~(12'-8", 6'-4")
+
+junction k.nw ~(12'-8", 19'-4")
+junction k.sw ~(12'-8", 9'-4")
+junction k.se ~(22'-5", 9'-4")
+junction k.ne ~(22'-5", 19'-4")
+
+junction core.nw ~(12'-8", 3'-4")
+junction core.sw ~(12'-8", 0'-0")
+
+junction hb.t ~(22'-5", 3'-4")
+junction hb.sw ~(22'-5", 0'-0")
+junction hb.ne ~(27'-7", 9'-4")
+junction hb.se ~(27'-7", 0'-0")
+
+junction jog.n ~(25'-9", 19'-4")
+junction lr.nw ~(31'-1", 19'-4")
+
+junction fp.w ~(35'-11", 19'-4")
+junction fp.nw ~(35'-11", 21'-1")
+junction fp.ne ~(40'-7", 21'-1")
+junction fp.e ~(40'-7", 19'-4")
+
+junction bay.pre ~(46'-0", 19'-4")
+junction bay.ne ~(51'-1", 19'-4")
+junction bay.r ~(52'-7", 19'-1")
+junction bay.a ~(57'-1", 14'-7")
+junction bay.b ~(58'-0", 9'-7")
+junction bay.c ~(54'-8", 6'-3")
+
+junction lr.se ~(54'-8", 0'-0")
+junction s2.ne ~(59'-3", 6'-3")
+junction s2.se ~(59'-3", 0'-0")
+junction s2.sw ~(54'-8", 0'-0")
+
+junction cl.ne ~(31'-1", 9'-4")
+junction cl.se ~(31'-1", 5'-11")
+junction cl.sw ~(27'-7", 5'-11")
+junction lr.sw ~(31'-1", 0'-0")
+
+% ---- walls: main north wall, fireplace bump, bay window -------------------
+
+wall env.tv_north { from: tv.nw, to: k.nw, type: wall_std }
+wall env.k_north { from: k.nw, to: k.ne, type: wall_std }
+wall env.jog { from: k.ne, to: jog.n, type: wall_std }
+wall env.bic { from: jog.n, to: lr.nw, type: wall_std }
+wall env.lr_north1 { from: lr.nw, to: fp.w, type: wall_std }
+wall env.fp_west { from: fp.w, to: fp.nw, type: wall_std }
+wall env.fp_face { from: fp.nw, to: fp.ne, type: wall_std }
+wall env.fp_east { from: fp.ne, to: fp.e, type: wall_std }
+wall env.lr_north2 { from: fp.e, to: bay.pre, type: wall_std }
+wall env.lr_north3 { from: bay.pre, to: bay.ne, type: wall_std }
+
+wall bay.return { from: bay.ne, to: bay.r, type: wall_std }
+wall bay.w1 { from: bay.r, to: bay.a, type: wall_std }
+wall bay.w2 { from: bay.a, to: bay.b, type: wall_std }
+wall bay.w3 { from: bay.b, to: bay.c, type: wall_std }
+
+wall env.lr_east1 { from: bay.c, to: lr.se, type: wall_std }
+wall env.s2_north { from: bay.c, to: s2.ne, type: wall_std }
+wall env.s2_east { from: s2.ne, to: s2.se, type: wall_std }
+wall env.s2_south { from: s2.se, to: s2.sw, type: wall_std }
+wall env.s2_west { from: s2.sw, to: bay.c, type: wall_std }
+
+wall env.lr_south { from: lr.se, to: lr.sw, type: wall_std }
+
+wall env.cl_east { from: cl.ne, to: cl.se, type: wall_std }
+wall env.lr_west3 { from: cl.se, to: lr.sw, type: wall_std }
+
+% ---- walls: TV Room / Kitchen / stair core / half bath / closet -----------
+
+wall env.tv_west { from: tv.nw, to: tv.sw, type: wall_std }
+wall env.tv_south { from: tv.sw, to: tv.se, type: wall_std }
+wall env.tv_k_upper { from: k.nw, to: k.sw, type: wall_std }
+wall env.tv_k_lower { from: k.sw, to: tv.se, type: wall_std }
+wall env.core_west_upper { from: tv.se, to: core.nw, type: wall_std }
+wall env.core_west { from: core.nw, to: core.sw, type: wall_std }
+wall env.core_south { from: core.sw, to: hb.sw, type: wall_std }
+wall env.core_north { from: core.nw, to: hb.t, type: wall_std }
+wall env.hb_west_lower { from: hb.t, to: hb.sw, type: wall_std }
+
+wall env.k_south { from: k.sw, to: k.se, type: wall_std }
+wall env.k_east { from: k.se, to: k.ne, type: wall_std }
+wall env.hb_west_upper { from: k.se, to: hb.t, type: wall_std }
+wall env.hb_north { from: k.se, to: hb.ne, type: wall_std }
+wall env.hb_east_lower { from: hb.se, to: cl.sw, type: wall_std }
+wall env.hb_east_upper { from: cl.sw, to: hb.ne, type: wall_std }
+wall env.hb_south { from: hb.sw, to: hb.se, type: wall_std }
+
+wall env.cl_north { from: hb.ne, to: cl.ne, type: wall_std }
+wall env.cl_south { from: cl.se, to: cl.sw, type: wall_std }
+
+% ---- rectilinear (everything except the free-angle bay window) ------------
+
+rectilinear env.*
+
+% ---- length bindings (measured) --------------------------------------------
+
+length(env.tv_north) = tv.width
+length(env.k_north) = k.width
+length(env.jog) = jog.width
+length(env.bic) = bic.width
+length(env.lr_north1) = lr.n_west
+length(env.fp_west) = fp.depth
+length(env.fp_face) = fp.width
+length(env.fp_east) = fp.depth
+length(env.lr_north2) = lr.n_east
+length(env.lr_north3) = lr.n_far
+
+length(bay.return) = bay.ret
+length(bay.w1) = bay.w1p
+length(bay.w2) = bay.w2p
+length(bay.w3) = bay.w3p
+
+length(env.lr_east1) = lr.se_drop
+length(env.s2_north) = s2.width
+length(env.s2_east) = s2.depth
+
+length(env.cl_east) = cl.depth
+
+length(env.tv_west) = tv.depth
+
+length(env.hb_south) = hb.width
+length(env.cl_south) = cl.width
+
+% ---- diagonal / redundant cross-checks (transcribed as-is; see header) ----
+
+meas m_lr_west : dist(lr.nw, lr.sw) = 19'-4" [measured 2025-04-09]
+
+meas m_lr_south : dist(lr.sw, lr.se) = 19'-4" [measured 2025-04-09]
+meas m_hb_depth : dist(hb.se, hb.ne) = 9'-4" [measured 2025-04-09]
+
+% ---- openings ---------------------------------------------------------------
+
+door tv_patio_door { in: env.tv_west, at: 1'-6" from tv.nw, size: 6'-0" x 6'-8" }
+window tv_south_win { in: env.tv_south, at: 3'-0" from tv.sw, size: 4'-0" x 3'-0", sill: 2'-6" }
+door core_door { in: env.core_west_upper, at: 1'-0" from tv.se, size: 2'-6" x 6'-8" }
+door hb_door { in: env.hb_north, at: 1'-0" from k.se, size: 2'-6" x 6'-8" }
+door cl_door { in: env.cl_north, at: 3" from hb.ne, size: 2'-0" x 6'-8" }
+window bay_win1 { in: bay.w1, at: 1'-0" from bay.r, size: 4'-0" x 4'-0", sill: 1'-6" }
+window bay_win2 { in: bay.w2, at: 1'-0" from bay.a, size: 3'-0" x 4'-0", sill: 1'-6" }
+window bay_win3 { in: bay.w3, at: 1'-0" from bay.b, size: 2'-8" x 4'-0", sill: 1'-6" }
+door s2_door { in: env.s2_north, at: 6" from bay.c, size: 2'-8" x 6'-8" }
+
+% ---- fixtures -----------------------------------------------------------
+
+fixture fireplace { kind: fireplace, at: ~(38'-3", 20'-3"), size: 4'-8" x 1'-9" }
+fixture built_in_cabinet { kind: cabinet, at: ~(28'-5", 20'-1"), size: 5'-4" x 1'-6" }
+fixture stairs_core { kind: stairs, at: ~(17'-6", 1'-8"), size: 4'-0" x 3'-4" }
+fixture stairs_kitchen { kind: stairs, at: ~(18'-0", 12'-0"), size: 3'-0" x 6'-0" }
+fixture stairs_back { kind: stairs, at: ~(57'-2", 2'-2"), size: 4'-0" x 6'-3" }
+
+% ---- room labels ----------------------------------------------------------
+
+space tv_room { at: ~(6'-0", 13'-0") }
+space kitchen { at: ~(17'-6", 14'-0") }
+space half_bath { at: ~(25'-0", 4'-8") }
+space closet { at: ~(29'-4", 7'-8") }
+space living_room { at: ~(42'-0", 10'-0") }
+space back_stairs { at: ~(57'-0", 3'-9") }
+delete env.lr_west1.axis

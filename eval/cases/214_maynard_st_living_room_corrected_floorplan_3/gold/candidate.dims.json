@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "note": "Image-anchored gold dims: value + span endpoints in pixel space. No ABL entity IDs.",
+  "dimensions": []
+}

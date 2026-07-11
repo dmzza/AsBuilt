@@ -134,6 +134,28 @@ export interface ScorePlanPairResult {
   transform: SimilarityTransform;
   overlays: OverlayArtifacts;
   notes: string[];
+  /** Whether vision/AI was available and used for this run. */
+  visionStatus: VisionStatus;
+}
+
+/** How vision/AI participated in a score run — surfaced loudly in the review UI. */
+export type VisionAvailability =
+  | "used"
+  | "gold_only"
+  | "missing_key"
+  | "disabled"
+  | "failed"
+  | "partial";
+
+export interface VisionStatus {
+  availability: VisionAvailability;
+  /** Short pill label, e.g. "No API key". */
+  label: string;
+  /** One-line explanation for banners. */
+  summary: string;
+  provider?: string;
+  model?: string;
+  details: string[];
 }
 
 export interface CaseMeta {
