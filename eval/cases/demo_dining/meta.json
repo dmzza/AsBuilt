@@ -1,0 +1,11 @@
+{
+  "title": "Demo dining + kitchen (seed)",
+  "branch": "asbuilt",
+  "asbuiltProject": "project",
+  "tolerances": {
+    "dimInches": 0.5,
+    "spanPx": 48,
+    "layoutMismatch": 0.35
+  },
+  "notes": "Seed gold was derived from solved wall endpoints in image space (for pipeline smoke). Replace reference.png with a real hand-drawing scan and re-verify spans in the review UI."
+}
