@@ -8,6 +8,10 @@ import type {
   StructureReading,
   WallSpan,
 } from "../types";
+import {
+  redrawStructureClean,
+  type StructureCleanStatus,
+} from "./redraw";
 
 const SYSTEM = `You are an expert architectural draftsperson reading floor-plan STRUCTURE only.
 
@@ -16,13 +20,11 @@ Your job is to recover the WALL GEOMETRY of the plan:
 - Wall spans: straight wall segments between junctions (the building fabric).
 
 Critical rules:
-- IGNORE dimension annotations entirely: dim lines, extension lines, ticks, arrows, and
-  written dimension numbers. Do not treat dim-line endpoints as junctions.
-- IGNORE room labels, notes, stairs hatching, furniture, and title blocks.
+- This image should already be a clean wall/window/door drawing. Prefer the inked
+  wall strokes; ignore any residual annotation if present.
 - Prefer interior/exterior WALL strokes and their corners.
 - Return absolute pixel coordinates (origin top-left) in the image size given.
-- Wall span endpoints should land on junctions (or wall faces) of the STRUCTURE, not on
-  floating dimension graphics.`;
+- Wall span endpoints should land on junctions (or wall faces) of the STRUCTURE.`;
 
 interface RawJunction {
   id?: string;
@@ -71,35 +73,23 @@ function toOrig(
   return clampPoint(scalePointFromResized(p, origW, origH, visionW, visionH), origW, origH);
 }
 
-/**
- * One-shot structure extract: junctions + wall spans.
- * Pre-resizes per Claude vision docs; coords stored in original image space.
- */
-export async function extractStructure(
+async function extractStructureFromPng(
   png: Buffer,
-  opts?: { client?: VisionClient | null },
+  client: VisionClient,
 ): Promise<{ structure: StructureReading; notes: string[] }> {
   const notes: string[] = [];
-  const client = opts?.client === undefined ? createVisionClient() : opts.client;
-  if (!client) {
-    notes.push("No vision client — skipped structure extract");
-    return { structure: { junctions: [], wallSpans: [] }, notes };
+  const prepared = await prepareVisionImage(png, client.model);
+  const { send, mediaType, origW, origH, visionW, visionH, didResize } = prepared;
+  if (didResize) {
+    notes.push(
+      `Structure pre-resized ${origW}×${origH} → ${visionW}×${visionH}; coords scaled back to original`,
+    );
   }
-  notes.push(`Structure vision: ${client.provider} / ${client.model}`);
 
-  try {
-    const prepared = await prepareVisionImage(png, client.model);
-    const { send, mediaType, origW, origH, visionW, visionH, didResize } = prepared;
-    if (didResize) {
-      notes.push(
-        `Structure pre-resized ${origW}×${origH} → ${visionW}×${visionH}; coords scaled back to original`,
-      );
-    }
-
-    const prompt = `Image size: ${visionW} x ${visionH} pixels.
+  const prompt = `Image size: ${visionW} x ${visionH} pixels.
 
 Extract the WALL STRUCTURE of this floor plan (junctions + wall spans).
-Ignore all dimension annotations and text.
+This should be a clean walls/windows/doors drawing — ignore any leftover annotations.
 
 Return absolute pixel coordinates in this ${visionW}×${visionH} image.
 Return JSON only:
@@ -124,38 +114,103 @@ Return JSON only:
 kind is one of: corner, t, cross, end, unknown.
 Prefer complete exterior + major interior walls. Skip tiny ticks and dim graphics.`;
 
-    const text = await client.complete({
-      system: SYSTEM,
-      prompt,
-      images: [{ data: send, mediaType }],
-      json: true,
-    });
-    const payload = parseJsonBlock<StructurePayload>(text);
-    const junctions: Junction[] = (payload.junctions ?? []).map((j, i) => ({
-      id: j.id ?? `j-${i + 1}`,
-      point: toOrig({ x: j.x, y: j.y }, origW, origH, visionW, visionH),
-      kind: parseKind(j.kind),
-      confidence: j.confidence,
+  const text = await client.complete({
+    system: SYSTEM,
+    prompt,
+    images: [{ data: send, mediaType }],
+    json: true,
+  });
+  const payload = parseJsonBlock<StructurePayload>(text);
+  const junctions: Junction[] = (payload.junctions ?? []).map((j, i) => ({
+    id: j.id ?? `j-${i + 1}`,
+    point: toOrig({ x: j.x, y: j.y }, origW, origH, visionW, visionH),
+    kind: parseKind(j.kind),
+    confidence: j.confidence,
+    verified: false,
+  }));
+  const wallSpans: WallSpan[] = (payload.wallSpans ?? [])
+    .filter((w) => w?.a && w?.b)
+    .map((w, i) => ({
+      id: w.id ?? `w-${i + 1}`,
+      a: toOrig(w.a, origW, origH, visionW, visionH),
+      b: toOrig(w.b, origW, origH, visionW, visionH),
+      aJunctionId: w.aJunctionId,
+      bJunctionId: w.bJunctionId,
+      confidence: w.confidence,
       verified: false,
     }));
-    const wallSpans: WallSpan[] = (payload.wallSpans ?? [])
-      .filter((w) => w?.a && w?.b)
-      .map((w, i) => ({
-        id: w.id ?? `w-${i + 1}`,
-        a: toOrig(w.a, origW, origH, visionW, visionH),
-        b: toOrig(w.b, origW, origH, visionW, visionH),
-        aJunctionId: w.aJunctionId,
-        bJunctionId: w.bJunctionId,
-        confidence: w.confidence,
-        verified: false,
-      }));
 
-    notes.push(
-      `Structure found ${junctions.length} junction(s), ${wallSpans.length} wall span(s)`,
-    );
-    return { structure: { junctions, wallSpans }, notes };
+  notes.push(
+    `Structure found ${junctions.length} junction(s), ${wallSpans.length} wall span(s)`,
+  );
+  return { structure: { junctions, wallSpans }, notes };
+}
+
+export interface ExtractStructureResult {
+  structure: StructureReading;
+  /** Cleaned walls-only PNG at original size when redraw succeeded. */
+  cleanedPng: Buffer | null;
+  cleanedStatus: StructureCleanStatus;
+  notes: string[];
+}
+
+/**
+ * Structure extract with a Nano Banana clean-redraw pass first.
+ * 1) Gemini image model redraws walls/windows/doors only → PNG artifact
+ * 2) Junctions + wall spans read from that cleaned image (fallback: original)
+ * Dims stay on the original annotated images (caller responsibility).
+ * Coords stored in original image space.
+ */
+export async function extractStructure(
+  png: Buffer,
+  opts?: { client?: VisionClient | null; skipClean?: boolean },
+): Promise<ExtractStructureResult> {
+  const notes: string[] = [];
+  const client = opts?.client === undefined ? createVisionClient() : opts.client;
+  if (!client) {
+    notes.push("No vision client — skipped structure extract");
+    return {
+      structure: { junctions: [], wallSpans: [] },
+      cleanedPng: null,
+      cleanedStatus: "skipped",
+      notes,
+    };
+  }
+  notes.push(`Structure vision: ${client.provider} / ${client.model}`);
+
+  let cleanedPng: Buffer | null = null;
+  let cleanedStatus: StructureCleanStatus = "skipped";
+  let source = png;
+
+  if (!opts?.skipClean) {
+    const redraw = await redrawStructureClean(png);
+    notes.push(...redraw.notes);
+    cleanedStatus = redraw.status;
+    if (redraw.cleanedPng) {
+      cleanedPng = redraw.cleanedPng;
+      source = redraw.cleanedPng;
+      notes.push("Structure extract running on cleaned redraw");
+    } else if (redraw.status === "fallback") {
+      notes.push("Structure extract falling back to original image");
+    }
+  }
+
+  try {
+    const extracted = await extractStructureFromPng(source, client);
+    notes.push(...extracted.notes);
+    return {
+      structure: extracted.structure,
+      cleanedPng,
+      cleanedStatus,
+      notes,
+    };
   } catch (e) {
     notes.push(`Structure extract failed: ${(e as Error).message}`);
-    return { structure: { junctions: [], wallSpans: [] }, notes };
+    return {
+      structure: { junctions: [], wallSpans: [] },
+      cleanedPng,
+      cleanedStatus,
+      notes,
+    };
   }
 }
