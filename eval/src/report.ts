@@ -147,30 +147,34 @@ export function writeReviewReport(
     border: 1px solid #6a5020; border-radius: 4px; padding: 0.5rem 0.65rem; margin: 0.35rem 0 0.6rem;
   }
   main { flex: 1; display: grid; grid-template-columns: 1fr 320px; min-height: 0; }
-  .stage-wrap { position: relative; overflow: auto; background: #0d0c0a; }
+  .stage-wrap { position: relative; overflow: auto; background: #0d0c0a; touch-action: none; }
   .stage {
     position: relative;
     display: inline-block;
     margin: 1rem;
     line-height: 0;
     box-shadow: 0 0 0 1px var(--line);
+    /* Zoom via explicit width (not CSS transform) so layout == visual. */
   }
   .stage img {
     display: block;
     max-width: none;
+    height: auto;
     background: #f5f3ec;
     user-select: none;
     -webkit-user-drag: none;
+    pointer-events: none;
   }
   .stage svg.overlay {
     position: absolute; left: 0; top: 0;
     width: 100%; height: 100%;
     pointer-events: none;
+    touch-action: none;
   }
   .stage svg.overlay.dragging { pointer-events: all; cursor: grabbing; }
   .stage svg.overlay .hit { pointer-events: stroke; cursor: pointer; }
   .stage svg.overlay .handle,
-  .stage svg.overlay .handle-hit { pointer-events: all; cursor: grab; }
+  .stage svg.overlay .handle-hit { pointer-events: all; cursor: grab; touch-action: none; }
   .stage svg.overlay .handle:active,
   .stage svg.overlay .handle-hit:active { cursor: grabbing; }
   .stage svg.overlay .handle-hit { fill: transparent; stroke: none; }
@@ -476,11 +480,12 @@ function syncSelectionClasses() {
   });
 }
 
-/** Screen-stable handle radius in image space (CSS zoom otherwise shrinks hit targets). */
+/** Screen-stable handle radius in image space (zoom otherwise shrinks hit targets). */
 function handleRadii(selected) {
   const z = Math.max(0.05, state.zoom);
   const vis = Math.max(selected ? 9 : 7, (selected ? 11 : 9) / z);
-  const hit = Math.max(vis + 6, 18 / z);
+  // Cap image-space hit radius so zoomed-out pads don't swallow neighboring handles.
+  const hit = Math.min(48, Math.max(vis + 6, 16 / z));
   return { vis, hit };
 }
 
@@ -489,6 +494,7 @@ function scrollDimIntoView(side, id) {
   if (!g) return;
   const wrap = document.getElementById('stage-wrap');
   const bb = g.getBBox();
+  // Stage CSS width is imgW*zoom, so user-space × zoom == layout pixels.
   const zx = state.zoom;
   wrap.scrollTo({
     left: Math.max(0, (bb.x + bb.width / 2) * zx - wrap.clientWidth / 2),
@@ -616,13 +622,27 @@ function escXml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+/**
+ * Map viewport client coords → image/SVG user space.
+ * Prefer getBoundingClientRect over getScreenCTM: CSS transforms on ancestors
+ * (and some WebKit quirks) make CTM unreliable, while the overlay's visual
+ * rect always reflects the current zoom whether we scale via width or transform.
+ */
 function clientToImage(evt) {
-  const pt = overlay.createSVGPoint();
-  pt.x = evt.clientX; pt.y = evt.clientY;
-  const ctm = overlay.getScreenCTM();
-  if (!ctm) return { x: 0, y: 0 };
-  const p = pt.matrixTransform(ctm.inverse());
-  return { x: p.x, y: p.y };
+  const rect = overlay.getBoundingClientRect();
+  if (!rect.width || !rect.height || !state.imgW || !state.imgH) return { x: 0, y: 0 };
+  return {
+    x: (evt.clientX - rect.left) * (state.imgW / rect.width),
+    y: (evt.clientY - rect.top) * (state.imgH / rect.height),
+  };
+}
+
+/** Display-space point of a dim endpoint (after candidate→ref alignment). */
+function endpointDisplay(side, id, which) {
+  const raw = findDim(side, id);
+  if (!raw) return { x: 0, y: 0 };
+  const d = side === 'candidate' ? candidateInRefSpace(raw) : raw;
+  return { ...d.span[which] };
 }
 
 function displayToStored(side, displayPt) {
@@ -650,15 +670,21 @@ function bindOverlayEvents() {
         if (e.button !== undefined && e.button !== 0) return;
         e.stopPropagation();
         e.preventDefault();
+        const which = h.getAttribute('data-which');
         // Select without rebuilding SVG — rebuilding would detach this handle and lose capture.
         state.selected = { kind: 'dim', side, id };
+        // Grab offset in image space so the endpoint doesn't jump to the cursor.
+        const imgPt = clientToImage(e);
+        const handlePt = endpointDisplay(side, id, which);
         state.drag = {
           side,
           id,
-          which: h.getAttribute('data-which'),
+          which,
           pointerId: e.pointerId,
           originX: e.clientX,
           originY: e.clientY,
+          grabDx: imgPt.x - handlePt.x,
+          grabDy: imgPt.y - handlePt.y,
         };
         state.dragMoved = false;
         syncSelectionClasses();
@@ -712,10 +738,11 @@ function onDragMove(e) {
   const dy = e.clientY - state.drag.originY;
   if (!state.dragMoved && Math.hypot(dx, dy) < 3) return;
   state.dragMoved = true;
-  const { side, id, which } = state.drag;
+  const { side, id, which, grabDx = 0, grabDy = 0 } = state.drag;
   const d = findDim(side, id);
   if (!d) return;
-  d.span[which] = displayToStored(side, clientToImage(e));
+  const img = clientToImage(e);
+  d.span[which] = displayToStored(side, { x: img.x - grabDx, y: img.y - grabDy });
   updateDimGeometry(side, id);
   updateInspectorSpanOnly();
 }
@@ -876,10 +903,16 @@ function renderInspector() {
 }
 
 function applyZoom() {
-  stage.style.transform = \`scale(\${state.zoom})\`;
-  stage.style.transformOrigin = '0 0';
+  // Size the bitmap (and thus the absolutely-positioned SVG overlay) to zoomed
+  // CSS pixels. viewBox stays in image pixels, so getBoundingClientRect mapping
+  // is always imgW/rect.width == 1/zoom — no CSS transform involved.
+  stage.style.transform = '';
+  stage.style.transformOrigin = '';
+  if (state.imgW) {
+    bgEl.style.width = \`\${state.imgW * state.zoom}px\`;
+  }
   document.getElementById('zoom-label').textContent = Math.round(state.zoom * 100) + '%';
-  // Rebuild so handle hit radii stay screen-stable under CSS scale.
+  // Rebuild so handle hit radii stay screen-stable under zoom.
   if (state.imgW && !state.drag) renderOverlay();
 }
 
