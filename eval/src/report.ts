@@ -211,6 +211,18 @@ export function writeReviewReport(
   .dim-group.selected .label-chip rect { stroke-width: 2.5; fill: rgba(30,40,70,0.95); }
   .label-chip text { fill: #f5f3ec; }
   .alt-span { fill: none; stroke: var(--warn); stroke-width: 2; stroke-dasharray: 6 4; opacity: 0.7; pointer-events: stroke; cursor: pointer; }
+  .structure-wall {
+    fill: none; stroke: #e2a350; stroke-width: 3.5; stroke-linecap: round; opacity: 0.9;
+    pointer-events: stroke; cursor: pointer;
+  }
+  .structure-wall.cand { stroke: #d4a017; stroke-dasharray: 10 5; opacity: 0.75; }
+  .structure-wall.selected { stroke-width: 5; filter: drop-shadow(0 0 4px rgba(226,163,80,0.7)); }
+  .structure-junction {
+    fill: #1c1b18; stroke: #e2a350; stroke-width: 2.5;
+    pointer-events: all; cursor: pointer;
+  }
+  .structure-junction.cand { stroke: #d4a017; }
+  .structure-junction.selected { fill: #e2a350; }
   .finding-box {
     fill: rgba(232,106,92,0.12); stroke: var(--bad); stroke-width: 2; stroke-dasharray: 8 5;
     pointer-events: all; cursor: pointer;
@@ -288,6 +300,8 @@ export function writeReviewReport(
     <button type="button" data-bg="layout_diff.png">Layout diff</button>
     <button type="button" id="toggle-ref" class="active">Ref dims</button>
     <button type="button" id="toggle-cand" class="active">Cand dims</button>
+    <button type="button" id="toggle-ref-struct" class="active">Ref structure</button>
+    <button type="button" id="toggle-cand-struct">Cand structure</button>
     <button type="button" id="toggle-findings" class="active">Findings</button>
     <button type="button" class="primary" id="export-gold">Save all gold</button>
   </div>
@@ -303,8 +317,8 @@ ${visionBannerHtml(vs)}
   <aside class="side">
     <div class="side-scroll">
       <p class="hint">
-        Click a dimension <b>on the image</b>. Labels sit <b>off</b> the wall so the drawing’s own dims stay visible.
-        Drag endpoint handles to set the span, then <b>Verify → gold</b> (saves into the case when the review server is running).
+        Layers: <b>dims</b> (annotation values/spans) vs <b>structure</b> (wall junctions/spans). Toggle independently.
+        Drag dim endpoint handles to correct spans, then <b>Verify → gold</b>.
       </p>
       <h2>Selected</h2>
       <div class="inspector empty" id="inspector">Click a dimension or finding on the plan.</div>
@@ -314,6 +328,10 @@ ${visionBannerHtml(vs)}
       <h2>Candidate dims <span class="badge cand" id="cand-count">0</span></h2>
       ${candEmptyHint}
       <div class="list" id="cand-list"></div>
+      <h2>Ref structure <span class="badge" id="ref-struct-count">0</span></h2>
+      <div class="list" id="ref-struct-list"></div>
+      <h2>Cand structure <span class="badge" id="cand-struct-count">0</span></h2>
+      <div class="list" id="cand-struct-list"></div>
       <h2>Findings <span class="badge" id="find-count">0</span></h2>
       <div class="list" id="find-list"></div>
       <h2>Notes</h2>
@@ -326,14 +344,18 @@ ${visionBannerHtml(vs)}
 const state = {
   reference: ${JSON.stringify(result.referenceDimsUsed)},
   candidate: ${JSON.stringify(result.candidateDimsUsed)},
+  referenceStructure: ${JSON.stringify(result.referenceStructure ?? { junctions: [], wallSpans: [] })},
+  candidateStructure: ${JSON.stringify(result.candidateStructure ?? { junctions: [], wallSpans: [] })},
   findings: ${JSON.stringify(result.findings)},
   transform: ${JSON.stringify(result.transform)},
   decisions: [],
   notes: ${JSON.stringify(result.notes)},
-  visionStatus: ${JSON.stringify(result.visionStatus)},
+  visionStatus: ${JSON.stringify(vs)},
   selected: null,
   showRef: true,
   showCand: true,
+  showRefStruct: true,
+  showCandStruct: false,
   showFindings: true,
   bg: 'onion_skin.png',
   zoom: 1,
@@ -473,6 +495,13 @@ function syncSelectionClasses() {
       && g.getAttribute('data-id') === state.selected.id;
     g.classList.toggle('selected', on);
   });
+  overlay.querySelectorAll('[data-struct]').forEach(el => {
+    const on = (state.selected?.kind === 'wall' || state.selected?.kind === 'junction')
+      && el.getAttribute('data-struct') === state.selected.kind
+      && el.getAttribute('data-side') === state.selected.side
+      && el.getAttribute('data-id') === state.selected.id;
+    el.classList.toggle('selected', on);
+  });
   overlay.querySelectorAll('.finding-box').forEach(el => {
     const on = state.selected?.kind === 'finding'
       && el.getAttribute('data-finding') === state.selected.id;
@@ -562,6 +591,31 @@ function renderOverlay() {
 
   drawSide('reference', state.showRef);
   drawSide('candidate', state.showCand);
+
+  const drawStructure = (side, show) => {
+    if (!show) return;
+    if (state.bg === 'candidate.png' && side === 'reference') return;
+    const struct = side === 'reference' ? state.referenceStructure : state.candidateStructure;
+    if (!struct) return;
+    const mapPt = (p) => {
+      if (side === 'reference' || state.bg === 'candidate.png') return p;
+      return applyTransform(p, state.transform);
+    };
+    const wallCls = side === 'reference' ? 'structure-wall' : 'structure-wall cand';
+    const jCls = side === 'reference' ? 'structure-junction' : 'structure-junction cand';
+    for (const w of struct.wallSpans || []) {
+      const a = mapPt(w.a), b = mapPt(w.b);
+      const sel = state.selected?.kind === 'wall' && state.selected.side === side && state.selected.id === w.id;
+      parts.push(\`<line class="\${wallCls}\${sel ? ' selected' : ''}" data-struct="wall" data-side="\${side}" data-id="\${escAttr(w.id)}" x1="\${a.x}" y1="\${a.y}" x2="\${b.x}" y2="\${b.y}"/>\`);
+    }
+    for (const j of struct.junctions || []) {
+      const p = mapPt(j.point);
+      const sel = state.selected?.kind === 'junction' && state.selected.side === side && state.selected.id === j.id;
+      parts.push(\`<circle class="\${jCls}\${sel ? ' selected' : ''}" data-struct="junction" data-side="\${side}" data-id="\${escAttr(j.id)}" cx="\${p.x}" cy="\${p.y}" r="7"/>\`);
+    }
+  };
+  drawStructure('reference', state.showRefStruct);
+  drawStructure('candidate', state.showCandStruct);
 
   overlay.innerHTML = parts.join('');
   bindOverlayEvents();
@@ -716,6 +770,16 @@ function bindOverlayEvents() {
       setSelected({ kind: 'finding', id: el.getAttribute('data-finding') });
     });
   });
+  overlay.querySelectorAll('[data-struct]').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setSelected({
+        kind: el.getAttribute('data-struct'),
+        side: el.getAttribute('data-side'),
+        id: el.getAttribute('data-id'),
+      });
+    });
+  });
 }
 
 function endDrag(e) {
@@ -756,9 +820,15 @@ function renderLists() {
   const refList = document.getElementById('ref-list');
   const candList = document.getElementById('cand-list');
   const findList = document.getElementById('find-list');
+  const refStructList = document.getElementById('ref-struct-list');
+  const candStructList = document.getElementById('cand-struct-list');
   document.getElementById('ref-count').textContent = String(state.reference.length);
   document.getElementById('cand-count').textContent = String(state.candidate.length);
   document.getElementById('find-count').textContent = String(state.findings.length);
+  const rs = state.referenceStructure || { junctions: [], wallSpans: [] };
+  const cs = state.candidateStructure || { junctions: [], wallSpans: [] };
+  document.getElementById('ref-struct-count').textContent = String(rs.junctions.length + rs.wallSpans.length);
+  document.getElementById('cand-struct-count').textContent = String(cs.junctions.length + cs.wallSpans.length);
 
   refList.innerHTML = state.reference.map(d => listDimBtn('reference', d)).join('');
   candList.innerHTML = state.candidate.map(d => listDimBtn('candidate', d)).join('');
@@ -769,6 +839,8 @@ function renderLists() {
       <span class="meta">\${escXml(f.status)}</span>
     </button>\`;
   }).join('');
+  refStructList.innerHTML = listStructureBtns('reference', rs);
+  candStructList.innerHTML = listStructureBtns('candidate', cs);
 
   refList.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
     setSelected({ kind: 'dim', side: 'reference', id: b.getAttribute('data-pick-dim') });
@@ -779,6 +851,38 @@ function renderLists() {
   findList.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
     setSelected({ kind: 'finding', id: b.getAttribute('data-pick-finding') });
   }));
+  refStructList.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+    setSelected({
+      kind: b.getAttribute('data-struct-kind'),
+      side: 'reference',
+      id: b.getAttribute('data-pick-struct'),
+    });
+  }));
+  candStructList.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+    setSelected({
+      kind: b.getAttribute('data-struct-kind'),
+      side: 'candidate',
+      id: b.getAttribute('data-pick-struct'),
+    });
+  }));
+}
+
+function listStructureBtns(side, struct) {
+  const walls = (struct.wallSpans || []).map(w => {
+    const sel = state.selected?.kind === 'wall' && state.selected.side === side && state.selected.id === w.id;
+    return \`<button type="button" class="\${sel ? 'selected' : ''}" data-struct-kind="wall" data-pick-struct="\${escAttr(w.id)}">
+      <span>wall \${escXml(w.id)}</span>
+      <span class="meta">(\${w.a.x.toFixed(0)},\${w.a.y.toFixed(0)})→(\${w.b.x.toFixed(0)},\${w.b.y.toFixed(0)})</span>
+    </button>\`;
+  });
+  const juncs = (struct.junctions || []).map(j => {
+    const sel = state.selected?.kind === 'junction' && state.selected.side === side && state.selected.id === j.id;
+    return \`<button type="button" class="\${sel ? 'selected' : ''}" data-struct-kind="junction" data-pick-struct="\${escAttr(j.id)}">
+      <span>\${escXml(j.kind || 'junction')} \${escXml(j.id)}</span>
+      <span class="meta">(\${j.point.x.toFixed(0)},\${j.point.y.toFixed(0)})</span>
+    </button>\`;
+  });
+  return walls.join('') + juncs.join('');
 }
 
 function listDimBtn(side, d) {
@@ -819,6 +923,31 @@ function renderInspector() {
       renderLists(); renderInspector(); renderOverlay();
       toast('Finding rejected');
     };
+    return;
+  }
+
+  if (sel.kind === 'wall' || sel.kind === 'junction') {
+    const struct = sel.side === 'reference' ? state.referenceStructure : state.candidateStructure;
+    if (sel.kind === 'wall') {
+      const w = (struct?.wallSpans || []).find(x => x.id === sel.id);
+      if (!w) { inspector.textContent = 'Missing wall span'; return; }
+      inspector.innerHTML = \`
+        <div class="row"><span class="badge">structure</span><span class="badge">wall</span>
+          <span class="badge \${sel.side === 'reference' ? 'ref' : 'cand'}">\${sel.side}</span></div>
+        <div style="margin-top:0.4rem;font-weight:600">\${escXml(w.id)}</div>
+        <div class="row"><label>A</label><span>(\${w.a.x.toFixed(0)}, \${w.a.y.toFixed(0)})</span></div>
+        <div class="row"><label>B</label><span>(\${w.b.x.toFixed(0)}, \${w.b.y.toFixed(0)})</span></div>
+        <p class="hint" style="margin-top:0.6rem">Wall span from structure pass — separate from dimension annotations.</p>\`;
+      return;
+    }
+    const j = (struct?.junctions || []).find(x => x.id === sel.id);
+    if (!j) { inspector.textContent = 'Missing junction'; return; }
+    inspector.innerHTML = \`
+      <div class="row"><span class="badge">structure</span><span class="badge">\${escXml(j.kind || 'junction')}</span>
+        <span class="badge \${sel.side === 'reference' ? 'ref' : 'cand'}">\${sel.side}</span></div>
+      <div style="margin-top:0.4rem;font-weight:600">\${escXml(j.id)}</div>
+      <div class="row"><label>Point</label><span>(\${j.point.x.toFixed(0)}, \${j.point.y.toFixed(0)})</span></div>
+      <p class="hint" style="margin-top:0.6rem">Junction from structure pass (not a dim tick).</p>\`;
     return;
   }
 
@@ -949,6 +1078,16 @@ document.getElementById('toggle-ref').onclick = (e) => {
 document.getElementById('toggle-cand').onclick = (e) => {
   state.showCand = !state.showCand;
   e.currentTarget.classList.toggle('active', state.showCand);
+  renderOverlay();
+};
+document.getElementById('toggle-ref-struct').onclick = (e) => {
+  state.showRefStruct = !state.showRefStruct;
+  e.currentTarget.classList.toggle('active', state.showRefStruct);
+  renderOverlay();
+};
+document.getElementById('toggle-cand-struct').onclick = (e) => {
+  state.showCandStruct = !state.showCandStruct;
+  e.currentTarget.classList.toggle('active', state.showCandStruct);
   renderOverlay();
 };
 document.getElementById('toggle-findings').onclick = (e) => {

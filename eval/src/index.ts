@@ -12,7 +12,15 @@ export {
 export { writeReviewReport } from "./report";
 export { createVisionClient } from "./vision/client";
 export { deriveVisionStatus, visionStatusTone } from "./vision/status";
+export {
+  countImageTokens,
+  resizedSize,
+  resizedSizeForModel,
+  scalePointFromResized,
+  tierForModel,
+} from "./vision/resize";
 export { extractDimensions } from "./dims/extract";
+export { extractStructure } from "./structure/extract";
 export { matchDimensions } from "./dims/match";
 export {
   casesRoot,
