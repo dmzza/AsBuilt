@@ -217,7 +217,12 @@ export function writeReviewReport(
     width: 100%; height: 100%;
     object-fit: fill;
   }
+  .stage img#bg-cand.contain {
+    object-fit: contain;
+  }
   .stage svg.overlay {
+    --ref-blend-op: 1;
+    --cand-blend-op: 1;
     position: absolute; left: 0; top: 0;
     width: 100%; height: 100%;
     pointer-events: none;
@@ -237,7 +242,8 @@ export function writeReviewReport(
   .dim-group.verified .span { stroke: var(--ok); }
   .dim-group.selected .span { stroke-width: 4.5; filter: drop-shadow(0 0 4px rgba(107,159,255,0.7)); }
   .dim-group:not(.selected) .span { opacity: 0.55; }
-  .dim-group.selected { opacity: 1; }
+  .dim-group.dim-ref { opacity: var(--ref-blend-op, 1); }
+  .dim-group.dim-cand { opacity: var(--cand-blend-op, 1); }
   .dim-group .span { fill: none; stroke-width: 3; stroke-linecap: round; }
   .dim-group .hit { fill: none; stroke: transparent; stroke-width: 18; }
   .dim-group .handle { fill: #fff; stroke-width: 2.5; }
@@ -262,18 +268,22 @@ export function writeReviewReport(
   .dim-group.verified .label-chip rect { stroke: var(--ok); }
   .dim-group.selected .label-chip rect { stroke-width: 2.5; fill: rgba(30,40,70,0.95); }
   .label-chip text { fill: #f5f3ec; }
-  .alt-span { fill: none; stroke: var(--warn); stroke-width: 2; stroke-dasharray: 6 4; opacity: 0.7; pointer-events: stroke; cursor: pointer; }
+  .alt-span { fill: none; stroke: var(--warn); stroke-width: 2; stroke-dasharray: 6 4; pointer-events: stroke; cursor: pointer; }
+  .alt-span[data-side="reference"] { opacity: calc(var(--ref-blend-op, 1) * 0.7); }
+  .alt-span[data-side="candidate"] { opacity: calc(var(--cand-blend-op, 1) * 0.7); }
   .structure-wall {
-    fill: none; stroke: #e2a350; stroke-width: 3.5; stroke-linecap: round; opacity: 0.9;
+    fill: none; stroke: #e2a350; stroke-width: 3.5; stroke-linecap: round;
     pointer-events: stroke; cursor: pointer;
+    opacity: calc(var(--ref-blend-op, 1) * 0.9);
   }
-  .structure-wall.cand { stroke: #d4a017; stroke-dasharray: 10 5; opacity: 0.75; }
+  .structure-wall.cand { stroke: #d4a017; stroke-dasharray: 10 5; opacity: calc(var(--cand-blend-op, 1) * 0.75); }
   .structure-wall.selected { stroke-width: 5; filter: drop-shadow(0 0 4px rgba(226,163,80,0.7)); }
   .structure-junction {
     fill: #1c1b18; stroke: #e2a350; stroke-width: 2.5;
     pointer-events: all; cursor: pointer;
+    opacity: var(--ref-blend-op, 1);
   }
-  .structure-junction.cand { stroke: #d4a017; }
+  .structure-junction.cand { stroke: #d4a017; opacity: var(--cand-blend-op, 1); }
   .structure-junction.selected { fill: #e2a350; }
   .finding-box {
     fill: rgba(232,106,92,0.12); stroke: var(--bad); stroke-width: 2; stroke-dasharray: 8 5;
@@ -469,9 +479,29 @@ const state = {
   server: false,
 };
 
-/** Cand layer for Original is aligned into ref space; cleaned cand may be native-sized (CSS-stretched). */
+/** Structure/Dimensions views use native-resolution cleaned cand PNGs (letterboxed to ref frame). */
 function isCandNativeBg() {
-  return false;
+  return state.view === 'structure' || state.view === 'dimensions';
+}
+
+/** Uniform scale + letterbox offsets mapping native cand coords into ref-sized stage space. */
+function candidateLetterbox() {
+  if (!isCandNativeBg()) return null;
+  const nw = bgCand.naturalWidth;
+  const nh = bgCand.naturalHeight;
+  if (!nw || !nh || !state.imgW || !state.imgH) return null;
+  const s = Math.min(state.imgW / nw, state.imgH / nh);
+  const ox = (state.imgW - nw * s) / 2;
+  const oy = (state.imgH - nh * s) / 2;
+  return { s, ox, oy };
+}
+
+function mapCandPoint(p) {
+  const lb = candidateLetterbox();
+  if (lb) {
+    return { x: lb.ox + p.x * lb.s, y: lb.oy + p.y * lb.s };
+  }
+  return applyTransform(p, state.transform);
 }
 
 const bgRef = document.getElementById('bg-ref');
@@ -552,9 +582,7 @@ function applyTransform(p, t) {
 }
 
 function candidateInRefSpace(d) {
-  if (isCandNativeBg()) return d;
-  const t = state.transform;
-  const map = (p) => applyTransform(p, t);
+  const map = (p) => mapCandPoint(p);
   return {
     ...d,
     span: { a: map(d.span.a), b: map(d.span.b) },
@@ -677,7 +705,6 @@ function renderOverlay() {
     if (!show) return;
     for (const raw of (side === 'reference' ? state.reference : state.candidate)) {
       const d = side === 'candidate' ? candidateInRefSpace(raw) : raw;
-      if (isCandNativeBg() && side === 'reference') continue;
       const selected = state.selected?.kind === 'dim' && state.selected.side === side && state.selected.id === raw.id;
       const cls = [
         'dim-group',
@@ -718,13 +745,9 @@ function renderOverlay() {
 
   const drawStructure = (side, show) => {
     if (!show) return;
-    if (isCandNativeBg() && side === 'reference') return;
     const struct = side === 'reference' ? state.referenceStructure : state.candidateStructure;
     if (!struct) return;
-    const mapPt = (p) => {
-      if (side === 'reference' || isCandNativeBg()) return p;
-      return applyTransform(p, state.transform);
-    };
+    const mapPt = (p) => (side === 'reference' ? p : mapCandPoint(p));
     const wallCls = side === 'reference' ? 'structure-wall' : 'structure-wall cand';
     const jCls = side === 'reference' ? 'structure-junction' : 'structure-junction cand';
     for (const w of struct.wallSpans || []) {
@@ -743,6 +766,7 @@ function renderOverlay() {
 
   overlay.innerHTML = parts.join('');
   bindOverlayEvents();
+  applyOverlayBlend();
 }
 
 function updateDimGeometry(side, id) {
@@ -816,7 +840,11 @@ function endpointDisplay(side, id, which) {
 }
 
 function displayToStored(side, displayPt) {
-  if (side === 'reference' || isCandNativeBg()) return displayPt;
+  if (side === 'reference') return displayPt;
+  const lb = candidateLetterbox();
+  if (lb) {
+    return { x: (displayPt.x - lb.ox) / lb.s, y: (displayPt.y - lb.oy) / lb.s };
+  }
   const t = state.transform;
   const c = Math.cos(-t.rotation), s = Math.sin(-t.rotation);
   const dx = displayPt.x - t.tx, dy = displayPt.y - t.ty;
@@ -1162,9 +1190,22 @@ function fitZoom() {
   applyZoom();
 }
 
+function applyOverlayBlend() {
+  if (!state.imgW) return;
+  const flags = detectionFlags();
+  const bothSides = state.showDetections && !flags.showFindings
+    && (flags.showRef || flags.showRefStruct)
+    && (flags.showCand || flags.showCandStruct);
+  const refOp = bothSides ? 1 - state.blend : 1;
+  const candOp = bothSides ? state.blend : 1;
+  overlay.style.setProperty('--ref-blend-op', String(refOp));
+  overlay.style.setProperty('--cand-blend-op', String(candOp));
+}
+
 function applyBlend() {
   bgCand.style.opacity = String(state.blend);
   bgRef.style.opacity = String(1);
+  applyOverlayBlend();
 }
 
 function applyView() {
@@ -1173,6 +1214,7 @@ function applyView() {
   const candChanged = bgCand.getAttribute('src') !== srcs.cand;
   if (refChanged) bgRef.src = srcs.ref;
   if (candChanged) bgCand.src = srcs.cand;
+  bgCand.classList.toggle('contain', isCandNativeBg());
   detectLabel.textContent = DETECT_LABELS[state.view] || '';
   document.querySelectorAll('#view-seg [data-view]').forEach(b => {
     b.classList.toggle('active', b.getAttribute('data-view') === state.view);
@@ -1191,6 +1233,9 @@ function onBgReady() {
 }
 
 bgRef.addEventListener('load', onBgReady);
+bgCand.addEventListener('load', () => {
+  if (state.imgW) renderOverlay();
+});
 
 document.querySelectorAll('#view-seg [data-view]').forEach(btn => {
   btn.addEventListener('click', () => {

@@ -188,7 +188,10 @@ export async function redrawImageClean(
         `Redraw model size ${outMeta.width}×${outMeta.height} → resize to ${prepared.origW}×${prepared.origH}`,
       );
       out = await sharp(out)
-        .resize(prepared.origW, prepared.origH, { fit: "fill" })
+        .resize(prepared.origW, prepared.origH, {
+          fit: "contain",
+          background: { r: 255, g: 255, b: 255 },
+        })
         .png()
         .toBuffer();
     } else {
