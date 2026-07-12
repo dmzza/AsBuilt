@@ -167,6 +167,7 @@ export async function runCase(caseDir: string): Promise<ScorePlanPairResult> {
     referenceGold: referenceGold.length ? referenceGold : undefined,
     candidateGold: candidateGold.length ? candidateGold : undefined,
     tolerances: meta.tolerances,
+    visionTiles: meta.visionTiles,
     artifactDir: outDir,
   });
 

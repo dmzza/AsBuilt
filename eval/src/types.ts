@@ -45,6 +45,37 @@ export interface DimReading {
 
 export type DimGold = DimReading & { verified: true };
 
+/** Corner / T / end point on the wall structure (not a dim tick). */
+export type JunctionKind = "corner" | "t" | "cross" | "end" | "unknown";
+
+export interface Junction {
+  id: string;
+  point: Point;
+  kind?: JunctionKind;
+  confidence?: number;
+  verified?: boolean;
+}
+
+/**
+ * A wall segment between two structure endpoints (faces/corners).
+ * Distinct from DimReading.span, which may follow dim-line graphics.
+ */
+export interface WallSpan {
+  id: string;
+  a: Point;
+  b: Point;
+  aJunctionId?: string;
+  bJunctionId?: string;
+  confidence?: number;
+  verified?: boolean;
+}
+
+/** Structure layer for one image: junctions + wall spans. */
+export interface StructureReading {
+  junctions: Junction[];
+  wallSpans: WallSpan[];
+}
+
 export type FindingKind =
   | "dim_value_mismatch"
   | "dim_span_mismatch"
@@ -120,6 +151,11 @@ export interface ScorePlanPairInput {
   tolerances?: ScoreTolerances;
   /** When true (default), call vision for dims/layout if gold missing / always for layout. */
   useVision?: boolean;
+  /**
+   * When true (default), dim extract also runs tiled zoom passes.
+   * Set false for one-shot full-image extract only.
+   */
+  visionTiles?: boolean;
   /** Run id / output dir for artifact paths (set by CLI). */
   artifactDir?: string;
 }
@@ -131,6 +167,10 @@ export interface ScorePlanPairResult {
   proposedCandidateReadings: DimReading[];
   referenceDimsUsed: DimReading[];
   candidateDimsUsed: DimReading[];
+  /** Wall junctions + spans on the reference image (original pixel space). */
+  referenceStructure?: StructureReading;
+  /** Wall junctions + spans on the candidate image (candidate pixel space). */
+  candidateStructure?: StructureReading;
   transform: SimilarityTransform;
   overlays: OverlayArtifacts;
   notes: string[];
@@ -164,6 +204,11 @@ export interface CaseMeta {
   asbuiltProject?: string;
   tolerances?: ScoreTolerances;
   title?: string;
+  /**
+   * When false, dim vision extract is one-shot full-page only (no tiled crops).
+   * Default true.
+   */
+  visionTiles?: boolean;
 }
 
 export interface ReviewDecision {
