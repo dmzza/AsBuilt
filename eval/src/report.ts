@@ -217,8 +217,10 @@ export function writeReviewReport(
     width: 100%; height: 100%;
     object-fit: fill;
   }
-  .stage img#bg-cand.contain {
-    object-fit: contain;
+  .stage img#bg-cand.native-transform {
+    width: auto;
+    height: auto;
+    object-fit: none;
   }
   .stage svg.overlay {
     --ref-blend-op: 1;
@@ -479,29 +481,38 @@ const state = {
   server: false,
 };
 
-/** Structure/Dimensions views use native-resolution cleaned cand PNGs (letterboxed to ref frame). */
+/** Structure/Dimensions views may use native-resolution cleaned cand PNGs (not pre-aligned). */
 function isCandNativeBg() {
-  return state.view === 'structure' || state.view === 'dimensions';
-}
-
-/** Uniform scale + letterbox offsets mapping native cand coords into ref-sized stage space. */
-function candidateLetterbox() {
-  if (!isCandNativeBg()) return null;
-  const nw = bgCand.naturalWidth;
-  const nh = bgCand.naturalHeight;
-  if (!nw || !nh || !state.imgW || !state.imgH) return null;
-  const s = Math.min(state.imgW / nw, state.imgH / nh);
-  const ox = (state.imgW - nw * s) / 2;
-  const oy = (state.imgH - nh * s) / 2;
-  return { s, ox, oy };
+  if (state.view !== 'structure' && state.view !== 'dimensions') return false;
+  const srcs = VIEW_SRCS[state.view] || VIEW_SRCS.original;
+  return srcs.cand !== VIEW_SRCS.original.cand;
 }
 
 function mapCandPoint(p) {
-  const lb = candidateLetterbox();
-  if (lb) {
-    return { x: lb.ox + p.x * lb.s, y: lb.oy + p.y * lb.s };
-  }
   return applyTransform(p, state.transform);
+}
+
+/** Position native cand PNG via eval similarity transform (same footprint as Original). */
+function applyCandBgLayout() {
+  const native = isCandNativeBg();
+  bgCand.classList.toggle('native-transform', native);
+  if (!native) {
+    bgCand.style.width = '';
+    bgCand.style.height = '';
+    bgCand.style.transform = '';
+    bgCand.style.transformOrigin = '';
+    return;
+  }
+  const nw = bgCand.naturalWidth;
+  const nh = bgCand.naturalHeight;
+  if (!nw || !nh) return;
+  const z = state.zoom;
+  const t = state.transform;
+  bgCand.style.width = \`\${nw * z}px\`;
+  bgCand.style.height = \`\${nh * z}px\`;
+  bgCand.style.transformOrigin = '0 0';
+  const deg = (t.rotation * 180) / Math.PI;
+  bgCand.style.transform = \`translate(\${t.tx * z}px, \${t.ty * z}px) rotate(\${deg}deg) scale(\${t.scale})\`;
 }
 
 const bgRef = document.getElementById('bg-ref');
@@ -579,6 +590,13 @@ function applyTransform(p, t) {
   const c = Math.cos(t.rotation), s = Math.sin(t.rotation);
   const x = t.scale * p.x, y = t.scale * p.y;
   return { x: c * x - s * y + t.tx, y: s * x + c * y + t.ty };
+}
+
+function inverseTransform(p, t) {
+  const c = Math.cos(-t.rotation), s = Math.sin(-t.rotation);
+  const dx = p.x - t.tx, dy = p.y - t.ty;
+  const invS = 1 / t.scale;
+  return { x: invS * (c * dx - s * dy), y: invS * (s * dx + c * dy) };
 }
 
 function candidateInRefSpace(d) {
@@ -841,15 +859,7 @@ function endpointDisplay(side, id, which) {
 
 function displayToStored(side, displayPt) {
   if (side === 'reference') return displayPt;
-  const lb = candidateLetterbox();
-  if (lb) {
-    return { x: (displayPt.x - lb.ox) / lb.s, y: (displayPt.y - lb.oy) / lb.s };
-  }
-  const t = state.transform;
-  const c = Math.cos(-t.rotation), s = Math.sin(-t.rotation);
-  const dx = displayPt.x - t.tx, dy = displayPt.y - t.ty;
-  const invS = 1 / t.scale;
-  return { x: invS * (c * dx - s * dy), y: invS * (s * dx + c * dy) };
+  return inverseTransform(displayPt, state.transform);
 }
 
 function bindOverlayEvents() {
@@ -1176,6 +1186,7 @@ function applyZoom() {
   stage.style.transformOrigin = '';
   if (state.imgW) {
     bgRef.style.width = \`\${state.imgW * state.zoom}px\`;
+    applyCandBgLayout();
   }
   document.getElementById('zoom-label').textContent = Math.round(state.zoom * 100) + '%';
   if (state.imgW && !state.drag) renderOverlay();
@@ -1214,7 +1225,7 @@ function applyView() {
   const candChanged = bgCand.getAttribute('src') !== srcs.cand;
   if (refChanged) bgRef.src = srcs.ref;
   if (candChanged) bgCand.src = srcs.cand;
-  bgCand.classList.toggle('contain', isCandNativeBg());
+  applyCandBgLayout();
   detectLabel.textContent = DETECT_LABELS[state.view] || '';
   document.querySelectorAll('#view-seg [data-view]').forEach(b => {
     b.classList.toggle('active', b.getAttribute('data-view') === state.view);
@@ -1234,6 +1245,7 @@ function onBgReady() {
 
 bgRef.addEventListener('load', onBgReady);
 bgCand.addEventListener('load', () => {
+  applyCandBgLayout();
   if (state.imgW) renderOverlay();
 });
 
