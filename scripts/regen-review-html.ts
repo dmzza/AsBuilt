@@ -36,6 +36,9 @@ for (const caseDir of cases) {
       proposedCandidateReadings: sc.proposedCandidateReadings ?? sc.candidateDimsUsed ?? [],
       referenceDimsUsed: sc.referenceDimsUsed ?? [],
       candidateDimsUsed: sc.candidateDimsUsed ?? [],
+      referenceStructure: sc.referenceStructure,
+      candidateStructure: sc.candidateStructure,
+      structureCleaned: sc.structureCleaned,
       transform: sc.transform,
       overlays: sc.overlays ?? {
         referencePng: "reference.png",

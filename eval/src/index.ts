@@ -21,6 +21,13 @@ export {
 } from "./vision/resize";
 export { extractDimensions } from "./dims/extract";
 export { extractStructure } from "./structure/extract";
+export {
+  redrawStructureClean,
+  resolveGeminiApiKey,
+  resolveNanoBananaModel,
+  type StructureCleanResult,
+  type StructureCleanStatus,
+} from "./structure/redraw";
 export { matchDimensions } from "./dims/match";
 export {
   casesRoot,
