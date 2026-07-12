@@ -145,6 +145,10 @@ export interface OverlayArtifacts {
   structureRefPng?: string;
   /** Walls/windows/doors-only redraw used for structure extract (candidate pixel space). */
   structureCandPng?: string;
+  /** Dimensions/measurement-lines-only redraw used for dim extract (ref pixel space). */
+  dimsRefPng?: string;
+  /** Dimensions/measurement-lines-only redraw used for dim extract (candidate pixel space). */
+  dimsCandPng?: string;
 }
 
 export interface ScorePlanPairInput {
@@ -177,6 +181,11 @@ export interface ScorePlanPairResult {
   candidateStructure?: StructureReading;
   /** How structure redraw went for ref / cand (ok | fallback | skipped). */
   structureCleaned?: {
+    reference: "ok" | "fallback" | "skipped";
+    candidate: "ok" | "fallback" | "skipped";
+  };
+  /** How dims redraw went for ref / cand (ok | fallback | skipped). */
+  dimsCleaned?: {
     reference: "ok" | "fallback" | "skipped";
     candidate: "ok" | "fallback" | "skipped";
   };

@@ -1,5 +1,9 @@
 import sharp from "sharp";
 import { parseDimText } from "../image";
+import {
+  redrawDimsClean,
+  type ImageCleanStatus,
+} from "../structure/redraw";
 import { createVisionClient, parseJsonBlock, type VisionClient } from "../vision/client";
 import { imageMeta, prepareVisionImage } from "../vision/prepare";
 import { scalePointFromResized } from "../vision/resize";
@@ -11,11 +15,14 @@ span it measures.
 
 Critical rules:
 - Separate WALL strokes from DIMENSION graphics (dim lines, extension lines, ticks, arrows).
+- This image may already be a clean dimensions-only drawing. Prefer dimension
+  ink (values, dim lines, extension lines, ticks); ignore any residual walls.
 - For each dimension, return the numeric value AND the two endpoints of the measured span
   in absolute pixel coordinates (origin top-left, x right, y down) of THIS image as given
   (width × height stated in the user message). Do not normalize coordinates.
 - Endpoints should land on the wall corners / faces being measured, NOT merely on the
-  dimension string. Prefer extension-line intersections with the measured wall.
+  dimension string. Prefer extension-line intersections with the measured wall
+  (or the implied measured edge from extension lines when walls were removed).
 - If wall-vs-dim-line is ambiguous, include alternateSpans with competing endpoint pairs.
 - Ignore room labels and notes that are not dimensions.
 - Coordinates must be within the image bounds you are given.`;
@@ -269,27 +276,59 @@ function mergeReadings(all: DimReading[]): DimReading[] {
   return kept.map((r, i) => ({ ...r, id: `dim-${i + 1}` }));
 }
 
+export interface ExtractDimensionsResult {
+  readings: DimReading[];
+  /** Cleaned dims-only PNG at original size when redraw succeeded. */
+  cleanedPng: Buffer | null;
+  cleanedStatus: ImageCleanStatus;
+  notes: string[];
+}
+
 /**
- * Multi-pass dimension extraction: full-page vision + tiled zooms.
- * Returns proposed readings (unverified) for human review → gold.
+ * Multi-pass dimension extraction with a Nano Banana dims-only redraw first.
+ * 1) Gemini image model redraws dimensions/measurement lines only → PNG artifact
+ * 2) Dim readings from that cleaned image (fallback: original)
+ * Layout/align stay on originals (caller responsibility).
  */
 export async function extractDimensions(
   png: Buffer,
-  opts?: { client?: VisionClient | null; tiles?: boolean },
-): Promise<{ readings: DimReading[]; notes: string[] }> {
+  opts?: { client?: VisionClient | null; tiles?: boolean; skipClean?: boolean },
+): Promise<ExtractDimensionsResult> {
   const notes: string[] = [];
   const client = opts?.client === undefined ? createVisionClient() : opts.client;
   if (!client) {
     notes.push(
       "No ANTHROPIC_API_KEY or OPENAI_API_KEY — skipped vision dim extraction. Provide gold dims or set a key.",
     );
-    return { readings: [], notes };
+    return {
+      readings: [],
+      cleanedPng: null,
+      cleanedStatus: "skipped",
+      notes,
+    };
   }
   notes.push(`Vision provider: ${client.provider} / ${client.model}`);
 
+  let cleanedPng: Buffer | null = null;
+  let cleanedStatus: ImageCleanStatus = "skipped";
+  let source = png;
+
+  if (!opts?.skipClean) {
+    const redraw = await redrawDimsClean(png);
+    notes.push(...redraw.notes);
+    cleanedStatus = redraw.status;
+    if (redraw.cleanedPng) {
+      cleanedPng = redraw.cleanedPng;
+      source = redraw.cleanedPng;
+      notes.push("Dim extract running on cleaned dims redraw");
+    } else if (redraw.status === "fallback") {
+      notes.push("Dim extract falling back to original image");
+    }
+  }
+
   let full: DimReading[] = [];
   try {
-    const pass = await extractPass(client, png, "full-page");
+    const pass = await extractPass(client, source, "full-page");
     full = pass.readings;
     if (pass.resizeNote) notes.push(pass.resizeNote);
     notes.push(`Full-page pass found ${full.length} dimension(s)`);
@@ -299,7 +338,7 @@ export async function extractDimensions(
 
   let tiled: DimReading[] = [];
   if (opts?.tiles !== false) {
-    const tiles = await tileImage(png);
+    const tiles = await tileImage(source);
     // Cap tiles for very large images but plan says spare no expense — still bound to 12
     const use = tiles.slice(0, 12);
     for (let i = 0; i < use.length; i++) {
@@ -320,14 +359,14 @@ export async function extractDimensions(
   const merged = mergeReadings([...full, ...tiled]);
   if (opts?.tiles === false) {
     notes.push(`One-shot merge kept ${merged.length} dimension(s); confirm crops skipped`);
-    return { readings: merged, notes };
+    return { readings: merged, cleanedPng, cleanedStatus, notes };
   }
 
   const uncertain = merged.filter((r) => (r.confidence ?? 0.5) < 0.65);
   for (const u of uncertain.slice(0, 8)) {
     try {
       const pad = 80;
-      const { width, height } = await imageMeta(png);
+      const { width, height } = await imageMeta(source);
       const left = Math.max(0, Math.floor(u.labelBBox.x - pad));
       const top = Math.max(0, Math.floor(u.labelBBox.y - pad));
       const widthC = Math.min(width - left, Math.ceil(u.labelBBox.w + pad * 2 + Math.abs(u.span.b.x - u.span.a.x)));
@@ -336,7 +375,7 @@ export async function extractDimensions(
         Math.ceil(u.labelBBox.h + pad * 2 + Math.abs(u.span.b.y - u.span.a.y)),
       );
       if (widthC < 40 || heightC < 40) continue;
-      const crop = await sharp(png)
+      const crop = await sharp(source)
         .extract({ left, top, width: widthC, height: heightC })
         .png()
         .toBuffer();
@@ -358,7 +397,7 @@ export async function extractDimensions(
     }
   }
 
-  return { readings: merged, notes };
+  return { readings: merged, cleanedPng, cleanedStatus, notes };
 }
 
 /** Vision pass for holistic topology notes between two aligned images. */

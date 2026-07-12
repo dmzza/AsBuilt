@@ -3,24 +3,37 @@ import sharp from "sharp";
 import { imageMeta } from "../vision/prepare";
 
 /** User-validated prompt that produced near-perfect walls-only rasters. */
-const PROMPT =
+export const STRUCTURE_REDRAW_PROMPT =
   "Redraw this at exactly the same size but showing only the walls, windows and doors, Remove all other clutter from the image like dimensions and measurement lines.";
 
-/** Nano Banana 2 — Gemini 3.1 Flash Image (override via EVAL_STRUCTURE_REDRAW_MODEL). */
-const DEFAULT_MODEL = "gemini-3.1-flash-image";
+/** User-validated prompt for dimensions/measurement-lines-only rasters. */
+export const DIMS_REDRAW_PROMPT =
+  "Redraw this at exactly the same size but showing only the dimensions and measurement lines, Remove all other clutter from the image like walls, windows and doors.";
+
+/**
+ * Nano Banana Pro — Gemini 3 Pro Image.
+ * (Not gemini-3.1-pro-image; Pro image is the 3.x Pro family, Flash is 3.1.)
+ * Override via EVAL_IMAGE_REDRAW_MODEL / EVAL_STRUCTURE_REDRAW_MODEL / GEMINI_IMAGE_MODEL.
+ */
+const DEFAULT_MODEL = "gemini-3-pro-image";
 
 /** Cap long edge before send; model tops out around 4K. Scale result back to original. */
 const MAX_LONG_EDGE = 4096;
 
-export type StructureCleanStatus = "ok" | "fallback" | "skipped";
+export type ImageCleanStatus = "ok" | "fallback" | "skipped";
+/** @deprecated Prefer ImageCleanStatus */
+export type StructureCleanStatus = ImageCleanStatus;
 
-export interface StructureCleanResult {
+export interface ImageCleanResult {
   /** Cleaned PNG at original input pixel size, or null on failure/skip. */
   cleanedPng: Buffer | null;
-  status: StructureCleanStatus;
+  status: ImageCleanStatus;
   notes: string[];
   model?: string;
 }
+
+/** @deprecated Prefer ImageCleanResult */
+export type StructureCleanResult = ImageCleanResult;
 
 export function resolveGeminiApiKey(): string | null {
   return (
@@ -33,6 +46,7 @@ export function resolveGeminiApiKey(): string | null {
 
 export function resolveNanoBananaModel(): string {
   return (
+    process.env.EVAL_IMAGE_REDRAW_MODEL?.trim() ||
     process.env.EVAL_STRUCTURE_REDRAW_MODEL?.trim() ||
     process.env.GEMINI_IMAGE_MODEL?.trim() ||
     DEFAULT_MODEL
@@ -60,21 +74,25 @@ async function prepareForNanoBanana(png: Buffer): Promise<{
 }
 
 /**
- * Walls/windows/doors-only redraw via Nano Banana (Gemini image edit).
+ * Shared Nano Banana (Gemini image edit) redraw helper.
  * Returns a PNG at the original pixel size when successful.
  */
-export async function redrawStructureClean(png: Buffer): Promise<StructureCleanResult> {
+export async function redrawImageClean(
+  png: Buffer,
+  opts: { prompt: string; label: string },
+): Promise<ImageCleanResult> {
   const notes: string[] = [];
+  const label = opts.label;
   const apiKey = resolveGeminiApiKey();
   if (!apiKey) {
     notes.push(
-      "No GEMINI_API_KEY / GOOGLE_API_KEY — skipped structure redraw (Nano Banana). Set GEMINI_API_KEY to enable.",
+      `No GEMINI_API_KEY / GOOGLE_API_KEY — skipped ${label} redraw (Nano Banana). Set GEMINI_API_KEY to enable.`,
     );
     return { cleanedPng: null, status: "skipped", notes };
   }
 
   const model = resolveNanoBananaModel();
-  notes.push(`Structure redraw: google / ${model} (Nano Banana)`);
+  notes.push(`${label} redraw: google / ${model} (Nano Banana)`);
 
   try {
     const prepared = await prepareForNanoBanana(png);
@@ -88,7 +106,7 @@ export async function redrawStructureClean(png: Buffer): Promise<StructureCleanR
     const interaction = await ai.interactions.create({
       model,
       input: [
-        { type: "text", text: PROMPT },
+        { type: "text", text: opts.prompt },
         {
           type: "image",
           mime_type: "image/png",
@@ -122,13 +140,29 @@ export async function redrawStructureClean(png: Buffer): Promise<StructureCleanR
 
     const meta = await imageMeta(out);
     notes.push(
-      `Structure redraw ok → cleaned ${meta.width}×${meta.height} (orig ${prepared.origW}×${prepared.origH})`,
+      `${label} redraw ok → cleaned ${meta.width}×${meta.height} (orig ${prepared.origW}×${prepared.origH})`,
     );
     return { cleanedPng: out, status: "ok", notes, model };
   } catch (e) {
     notes.push(
-      `Structure redraw failed: ${(e as Error).message} — using original image`,
+      `${label} redraw failed: ${(e as Error).message} — using original image`,
     );
     return { cleanedPng: null, status: "fallback", notes, model };
   }
+}
+
+/** Walls/windows/doors-only redraw. */
+export async function redrawStructureClean(png: Buffer): Promise<ImageCleanResult> {
+  return redrawImageClean(png, {
+    prompt: STRUCTURE_REDRAW_PROMPT,
+    label: "Structure",
+  });
+}
+
+/** Dimensions/measurement-lines-only redraw. */
+export async function redrawDimsClean(png: Buffer): Promise<ImageCleanResult> {
+  return redrawImageClean(png, {
+    prompt: DIMS_REDRAW_PROMPT,
+    label: "Dims",
+  });
 }
