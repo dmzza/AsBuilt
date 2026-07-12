@@ -32,8 +32,8 @@ describe("Anthropic vision resizedSize", () => {
   });
 
   test("gemini uses generous tier", () => {
-    expect(tierForModel("gemini-3.1-pro-preview")).toBe("gemini");
-    const [w, h] = resizedSizeForModel(5024, 2664, "gemini-3.1-pro-preview");
+    expect(tierForModel("gemini-3.5-flash")).toBe("gemini");
+    const [w, h] = resizedSizeForModel(5024, 2664, "gemini-3.5-flash");
     expect(w).toBeLessThanOrEqual(4096);
     expect(h).toBeLessThanOrEqual(4096);
     expect(w).toBeGreaterThan(2000);
