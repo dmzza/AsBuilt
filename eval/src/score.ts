@@ -54,6 +54,12 @@ export async function scorePlanPair(
   let proposedCandidateReadings: DimReading[] = [];
   let referenceStructure: StructureReading = { junctions: [], wallSpans: [] };
   let candidateStructure: StructureReading = { junctions: [], wallSpans: [] };
+  let structureRefCleaned: Buffer | null = null;
+  let structureCandCleaned: Buffer | null = null;
+  let structureCleaned: ScorePlanPairResult["structureCleaned"] = {
+    reference: "skipped",
+    candidate: "skipped",
+  };
 
   if (useVision) {
     const extractOpts = { tiles: input.visionTiles !== false };
@@ -61,15 +67,20 @@ export async function scorePlanPair(
       notes.push("Vision dim extract: one-shot full-page only (tiles disabled)");
     }
 
-    // Structure layer (walls/junctions) — separate from dim annotations.
+    // Structure layer (walls/junctions) — Nano Banana clean redraw first, then extract.
+    // Dim extract still uses the original annotated images below.
     {
       const sx = await extractStructure(input.reference);
       referenceStructure = sx.structure;
+      structureRefCleaned = sx.cleanedPng;
+      structureCleaned.reference = sx.cleanedStatus;
       notes.push(...sx.notes.map((n) => `ref-structure: ${n}`));
     }
     {
       const sx = await extractStructure(input.candidate);
       candidateStructure = sx.structure;
+      structureCandCleaned = sx.cleanedPng;
+      structureCleaned.candidate = sx.cleanedStatus;
       notes.push(...sx.notes.map((n) => `cand-structure: ${n}`));
     }
 
@@ -156,7 +167,7 @@ export async function scorePlanPair(
       : layout.score,
   };
 
-  const overlays = {
+  const overlays: ScorePlanPairResult["overlays"] = {
     referencePng: "reference.png",
     candidatePng: "candidate.png",
     alignedCandidatePng: "aligned_candidate.png",
@@ -164,6 +175,8 @@ export async function scorePlanPair(
     layoutDiffPng: "layout_diff.png",
     dimsOverlayPng: "dims_overlay.png",
   };
+  if (structureRefCleaned) overlays.structureRefPng = "structure_ref.png";
+  if (structureCandCleaned) overlays.structureCandPng = "structure_cand.png";
 
   if (artifactDir) {
     mkdirSync(artifactDir, { recursive: true });
@@ -172,6 +185,12 @@ export async function scorePlanPair(
     writeFileSync(join(artifactDir, overlays.alignedCandidatePng), aligned);
     writeFileSync(join(artifactDir, overlays.onionSkinPng), onion);
     writeFileSync(join(artifactDir, overlays.layoutDiffPng!), layout.diffPng);
+    if (structureRefCleaned && overlays.structureRefPng) {
+      writeFileSync(join(artifactDir, overlays.structureRefPng), structureRefCleaned);
+    }
+    if (structureCandCleaned && overlays.structureCandPng) {
+      writeFileSync(join(artifactDir, overlays.structureCandPng), structureCandCleaned);
+    }
 
     // Dim overlay on onion skin in reference space (ref dims + aligned cand spans drawn via findings)
     const overlay = await drawDimsOverlay(onion, referenceDimsUsed, findings, {
@@ -194,6 +213,7 @@ export async function scorePlanPair(
           proposedCandidateReadings,
           referenceStructure,
           candidateStructure,
+          structureCleaned,
           overlays,
         },
         null,
@@ -211,6 +231,7 @@ export async function scorePlanPair(
     candidateDimsUsed,
     referenceStructure,
     candidateStructure,
+    structureCleaned,
     transform,
     overlays,
     notes,

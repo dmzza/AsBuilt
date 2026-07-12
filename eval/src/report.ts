@@ -24,7 +24,7 @@ function visionBannerHtml(vs: VisionStatus): string {
   if (vs.availability === "used") return "";
   const how =
     vs.availability === "missing_key"
-      ? "Add <code>ANTHROPIC_API_KEY</code> (or <code>OPENAI_API_KEY</code>) to <code>.env</code>, then re-score this case."
+      ? "Add <code>ANTHROPIC_API_KEY</code> (or <code>OPENAI_API_KEY</code>) to <code>.env</code> for dim/structure vision. Structure walls-only redraw also needs <code>GEMINI_API_KEY</code> (Nano Banana). Then re-score this case."
       : vs.availability === "disabled"
         ? "Re-run with vision enabled to propose dimensions."
         : vs.availability === "gold_only"
@@ -298,6 +298,8 @@ export function writeReviewReport(
     <button type="button" data-bg="aligned_candidate.png">Aligned</button>
     <button type="button" data-bg="candidate.png">Candidate</button>
     <button type="button" data-bg="layout_diff.png">Layout diff</button>
+    ${result.overlays.structureRefPng ? `<button type="button" data-bg="${esc(result.overlays.structureRefPng)}">Struct ref</button>` : ""}
+    ${result.overlays.structureCandPng ? `<button type="button" data-bg="${esc(result.overlays.structureCandPng)}">Struct cand</button>` : ""}
     <button type="button" id="toggle-ref" class="active">Ref dims</button>
     <button type="button" id="toggle-cand" class="active">Cand dims</button>
     <button type="button" id="toggle-ref-struct" class="active">Ref structure</button>
@@ -318,8 +320,14 @@ ${visionBannerHtml(vs)}
     <div class="side-scroll">
       <p class="hint">
         Layers: <b>dims</b> (annotation values/spans) vs <b>structure</b> (wall junctions/spans). Toggle independently.
+        Use <b>Struct ref/cand</b> backgrounds to inspect the walls-only redraw used for structure extract.
         Drag dim endpoint handles to correct spans, then <b>Verify → gold</b>.
       </p>
+      ${
+        result.structureCleaned
+          ? `<p class="hint">Structure redraw: ref <b>${esc(result.structureCleaned.reference)}</b>, cand <b>${esc(result.structureCleaned.candidate)}</b>.</p>`
+          : ""
+      }
       <h2>Selected</h2>
       <div class="inspector empty" id="inspector">Click a dimension or finding on the plan.</div>
       <h2>Reference dims <span class="badge ref" id="ref-count">0</span></h2>
@@ -346,6 +354,8 @@ const state = {
   candidate: ${JSON.stringify(result.candidateDimsUsed)},
   referenceStructure: ${JSON.stringify(result.referenceStructure ?? { junctions: [], wallSpans: [] })},
   candidateStructure: ${JSON.stringify(result.candidateStructure ?? { junctions: [], wallSpans: [] })},
+  structureCleaned: ${JSON.stringify(result.structureCleaned ?? null)},
+  overlays: ${JSON.stringify(result.overlays)},
   findings: ${JSON.stringify(result.findings)},
   transform: ${JSON.stringify(result.transform)},
   decisions: [],
@@ -365,6 +375,10 @@ const state = {
   dragMoved: false,
   server: false,
 };
+
+function isCandNativeBg() {
+  return state.bg === 'candidate.png' || state.bg === (state.overlays && state.overlays.structureCandPng);
+}
 
 const bgEl = document.getElementById('bg');
 const overlay = document.getElementById('overlay');
@@ -441,7 +455,7 @@ function applyTransform(p, t) {
 }
 
 function candidateInRefSpace(d) {
-  if (state.bg === 'candidate.png') return d;
+  if (isCandNativeBg()) return d;
   const t = state.transform;
   const map = (p) => applyTransform(p, t);
   return {
@@ -540,7 +554,7 @@ function renderOverlay() {
 
   const parts = [];
 
-  if (state.showFindings && state.bg !== 'candidate.png') {
+  if (state.showFindings && !isCandNativeBg()) {
     for (const f of state.findings) {
       const b = f.alignedBBox || f.referenceBBox;
       if (!b) continue;
@@ -553,7 +567,7 @@ function renderOverlay() {
     if (!show) return;
     for (const raw of (side === 'reference' ? state.reference : state.candidate)) {
       const d = side === 'candidate' ? candidateInRefSpace(raw) : raw;
-      if (state.bg === 'candidate.png' && side === 'reference') continue;
+      if (isCandNativeBg() && side === 'reference') continue;
       const selected = state.selected?.kind === 'dim' && state.selected.side === side && state.selected.id === raw.id;
       const cls = [
         'dim-group',
@@ -594,11 +608,13 @@ function renderOverlay() {
 
   const drawStructure = (side, show) => {
     if (!show) return;
-    if (state.bg === 'candidate.png' && side === 'reference') return;
+    // Candidate-native canvases (raw cand / cleaned cand) hide ref structure.
+    if (isCandNativeBg() && side === 'reference') return;
+    // Cleaned-ref canvas is ref pixel space — keep ref structure, transform cand.
     const struct = side === 'reference' ? state.referenceStructure : state.candidateStructure;
     if (!struct) return;
     const mapPt = (p) => {
-      if (side === 'reference' || state.bg === 'candidate.png') return p;
+      if (side === 'reference' || isCandNativeBg()) return p;
       return applyTransform(p, state.transform);
     };
     const wallCls = side === 'reference' ? 'structure-wall' : 'structure-wall cand';
@@ -700,7 +716,7 @@ function endpointDisplay(side, id, which) {
 }
 
 function displayToStored(side, displayPt) {
-  if (side === 'reference' || state.bg === 'candidate.png') return displayPt;
+  if (side === 'reference' || isCandNativeBg()) return displayPt;
   const t = state.transform;
   const c = Math.cos(-t.rotation), s = Math.sin(-t.rotation);
   const dx = displayPt.x - t.tx, dy = displayPt.y - t.ty;

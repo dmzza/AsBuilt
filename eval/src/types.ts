@@ -141,6 +141,10 @@ export interface OverlayArtifacts {
   onionSkinPng: string;
   layoutDiffPng?: string;
   dimsOverlayPng?: string;
+  /** Walls/windows/doors-only redraw used for structure extract (ref pixel space). */
+  structureRefPng?: string;
+  /** Walls/windows/doors-only redraw used for structure extract (candidate pixel space). */
+  structureCandPng?: string;
 }
 
 export interface ScorePlanPairInput {
@@ -171,6 +175,11 @@ export interface ScorePlanPairResult {
   referenceStructure?: StructureReading;
   /** Wall junctions + spans on the candidate image (candidate pixel space). */
   candidateStructure?: StructureReading;
+  /** How structure redraw went for ref / cand (ok | fallback | skipped). */
+  structureCleaned?: {
+    reference: "ok" | "fallback" | "skipped";
+    candidate: "ok" | "fallback" | "skipped";
+  };
   transform: SimilarityTransform;
   overlays: OverlayArtifacts;
   notes: string[];
