@@ -190,7 +190,7 @@ export function svgToPng(svg: string, scale = 2): Buffer {
 export function renderAblProjectToPng(
   projectDir: string,
   opts: RenderOptions = {},
-): { png: Buffer; svg: string; branch: string } {
+): { png: Buffer; svg: string; branch: string; converged: boolean } {
   const files = loadAblProjectDir(projectDir);
   const project = loadProject(files);
   const branch = opts.branch ?? [...project.layers.keys()][0];

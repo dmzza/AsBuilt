@@ -470,10 +470,26 @@ export async function visionTopologyFindings(
     notes.push("No vision client — skipped topology vision pass");
     return { findings: [], notes };
   }
-  const prompt = `Image 1 is the REFERENCE floor plan. Image 2 is the CANDIDATE aligned into the same frame.
+
+  const preparedRef = await prepareVisionImage(referencePng, c.model);
+  const preparedCand = await prepareVisionImage(alignedCandidatePng, c.model);
+  const { send: refSend, mediaType: refMedia, origW, origH, visionW, visionH, didResize } =
+    preparedRef;
+  if (didResize) {
+    notes.push(
+      `Topology ref pre-resized ${origW}×${origH} → ${visionW}×${visionH}; bbox coords scaled back`,
+    );
+  }
+
+  const prompt = `Image 1 is the REFERENCE floor plan (${visionW}×${visionH} pixels).
+Image 2 is the CANDIDATE aligned into the same frame (${preparedCand.visionW}×${preparedCand.visionH} pixels).
 Ignore dimension text; focus on walls, rooms, doors, windows, fixtures.
+Return absolute pixel coordinates for referenceBBox in Image 1's ${visionW}×${visionH} space
+(origin top-left). Do NOT use normalized 0–1000 boxes.
 List structural differences as JSON:
 {
+  "width": ${visionW},
+  "height": ${visionH},
   "findings": [
     {
       "id": "topo-1",
@@ -491,12 +507,14 @@ Only real differences. Empty array if they match.`;
       system: SYSTEM,
       prompt,
       images: [
-        { data: referencePng, mediaType: "image/png" },
-        { data: alignedCandidatePng, mediaType: "image/png" },
+        { data: refSend, mediaType: refMedia },
+        { data: preparedCand.send, mediaType: preparedCand.mediaType },
       ],
       json: true,
     });
     const payload = parseJsonBlock<{
+      width?: number;
+      height?: number;
       findings: {
         id: string;
         kind?: string;
@@ -505,15 +523,53 @@ Only real differences. Empty array if they match.`;
         referenceBBox?: BBox;
       }[];
     }>(text);
-    const findings = (payload.findings ?? []).map((f) => ({
-      id: f.id,
-      kind: "topology" as const,
-      message: f.message,
-      severity: f.severity ?? "warn",
-      referenceBBox: f.referenceBBox,
-      alignedBBox: f.referenceBBox,
-      status: "provisional" as const,
-    }));
+
+    const samplePoints: Point[] = [];
+    for (const f of payload.findings ?? []) {
+      const b = f.referenceBBox;
+      if (!b) continue;
+      samplePoints.push({ x: b.x, y: b.y });
+      samplePoints.push({ x: b.x + b.w, y: b.y + b.h });
+    }
+    const canvas = resolveModelCoordCanvas({
+      sentW: visionW,
+      sentH: visionH,
+      payloadW: payload.width,
+      payloadH: payload.height,
+      points: samplePoints,
+    });
+    if (canvas.note) notes.push(canvas.note);
+    const { coordW, coordH } = canvas;
+
+    const mapBBox = (b: BBox | undefined): BBox | undefined => {
+      if (!b) return undefined;
+      const tl = scalePointFromResized({ x: b.x, y: b.y }, origW, origH, coordW, coordH);
+      const br = scalePointFromResized(
+        { x: b.x + b.w, y: b.y + b.h },
+        origW,
+        origH,
+        coordW,
+        coordH,
+      );
+      return clampBBox(
+        { x: tl.x, y: tl.y, w: Math.max(1, br.x - tl.x), h: Math.max(1, br.y - tl.y) },
+        origW,
+        origH,
+      );
+    };
+
+    const findings = (payload.findings ?? []).map((f) => {
+      const referenceBBox = mapBBox(f.referenceBBox);
+      return {
+        id: f.id,
+        kind: "topology" as const,
+        message: f.message,
+        severity: f.severity ?? "warn",
+        referenceBBox,
+        alignedBBox: referenceBBox,
+        status: "provisional" as const,
+      };
+    });
     notes.push(`Vision topology: ${findings.length} finding(s)`);
     return { findings, notes };
   } catch (e) {

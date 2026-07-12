@@ -27,11 +27,29 @@ describe("resolveModelCoordCanvas", () => {
       points: [
         { x: 129, y: 155 },
         { x: 992, y: 155 },
+        { x: 129, y: 805 },
+        { x: 992, y: 805 },
       ],
     });
     expect(r.coordW).toBe(1000);
     expect(r.coordH).toBe(1000);
     expect(r.note).toMatch(/0–1000/);
+  });
+
+  test("sparse corner pixels stay pixel space", () => {
+    const r = resolveModelCoordCanvas({
+      sentW: 4088,
+      sentH: 2168,
+      payloadW: 4088,
+      payloadH: 2168,
+      points: [
+        { x: 129, y: 155 },
+        { x: 992, y: 400 },
+      ],
+    });
+    expect(r.coordW).toBe(4088);
+    expect(r.coordH).toBe(2168);
+    expect(r.note).toBeUndefined();
   });
 
   test("honors small declared canvas", () => {
