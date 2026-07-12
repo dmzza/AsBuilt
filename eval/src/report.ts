@@ -24,7 +24,7 @@ function visionBannerHtml(vs: VisionStatus): string {
   if (vs.availability === "used") return "";
   const how =
     vs.availability === "missing_key"
-      ? "Add <code>ANTHROPIC_API_KEY</code> (or <code>OPENAI_API_KEY</code>) to <code>.env</code> for dim/structure vision. Structure walls-only redraw also needs <code>GEMINI_API_KEY</code> (Nano Banana). Then re-score this case."
+      ? "Add <code>ANTHROPIC_API_KEY</code> (or <code>OPENAI_API_KEY</code>) to <code>.env</code> for dim/structure vision. Structure/dims clean redraw also needs <code>GEMINI_API_KEY</code> (Nano Banana). Then re-score this case."
       : vs.availability === "disabled"
         ? "Re-run with vision enabled to propose dimensions."
         : vs.availability === "gold_only"
@@ -300,6 +300,8 @@ export function writeReviewReport(
     <button type="button" data-bg="layout_diff.png">Layout diff</button>
     ${result.overlays.structureRefPng ? `<button type="button" data-bg="${esc(result.overlays.structureRefPng)}">Struct ref</button>` : ""}
     ${result.overlays.structureCandPng ? `<button type="button" data-bg="${esc(result.overlays.structureCandPng)}">Struct cand</button>` : ""}
+    ${result.overlays.dimsRefPng ? `<button type="button" data-bg="${esc(result.overlays.dimsRefPng)}">Dims ref</button>` : ""}
+    ${result.overlays.dimsCandPng ? `<button type="button" data-bg="${esc(result.overlays.dimsCandPng)}">Dims cand</button>` : ""}
     <button type="button" id="toggle-ref" class="active">Ref dims</button>
     <button type="button" id="toggle-cand" class="active">Cand dims</button>
     <button type="button" id="toggle-ref-struct" class="active">Ref structure</button>
@@ -320,12 +322,17 @@ ${visionBannerHtml(vs)}
     <div class="side-scroll">
       <p class="hint">
         Layers: <b>dims</b> (annotation values/spans) vs <b>structure</b> (wall junctions/spans). Toggle independently.
-        Use <b>Struct ref/cand</b> backgrounds to inspect the walls-only redraw used for structure extract.
+        Use <b>Struct ref/cand</b> for the walls-only redraw and <b>Dims ref/cand</b> for the dimensions-only redraw used in extract.
         Drag dim endpoint handles to correct spans, then <b>Verify → gold</b>.
       </p>
       ${
         result.structureCleaned
           ? `<p class="hint">Structure redraw: ref <b>${esc(result.structureCleaned.reference)}</b>, cand <b>${esc(result.structureCleaned.candidate)}</b>.</p>`
+          : ""
+      }
+      ${
+        result.dimsCleaned
+          ? `<p class="hint">Dims redraw: ref <b>${esc(result.dimsCleaned.reference)}</b>, cand <b>${esc(result.dimsCleaned.candidate)}</b>.</p>`
           : ""
       }
       <h2>Selected</h2>
@@ -355,6 +362,7 @@ const state = {
   referenceStructure: ${JSON.stringify(result.referenceStructure ?? { junctions: [], wallSpans: [] })},
   candidateStructure: ${JSON.stringify(result.candidateStructure ?? { junctions: [], wallSpans: [] })},
   structureCleaned: ${JSON.stringify(result.structureCleaned ?? null)},
+  dimsCleaned: ${JSON.stringify(result.dimsCleaned ?? null)},
   overlays: ${JSON.stringify(result.overlays)},
   findings: ${JSON.stringify(result.findings)},
   transform: ${JSON.stringify(result.transform)},

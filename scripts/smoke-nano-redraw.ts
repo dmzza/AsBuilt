@@ -1,10 +1,11 @@
 /**
- * Smoke: Nano Banana structure redraw on Maynard _4 reference only.
+ * Smoke: Nano Banana structure + dims redraw on Maynard _4 reference.
  *   npx vite-node scripts/smoke-nano-redraw.ts
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
+  redrawDimsClean,
   redrawStructureClean,
   resolveGeminiApiKey,
   resolveNanoBananaModel,
@@ -18,27 +19,53 @@ const ref = readFileSync(join(caseDir, "reference.png"));
 console.log("apiKey:", resolveGeminiApiKey() ? "present" : "MISSING");
 console.log("model:", resolveNanoBananaModel());
 
-const r = await redrawStructureClean(ref);
+const structure = await redrawStructureClean(ref);
 console.log(
+  "structure:",
   JSON.stringify(
     {
-      status: r.status,
-      notes: r.notes,
-      model: r.model,
-      bytes: r.cleanedPng?.length ?? 0,
+      status: structure.status,
+      notes: structure.notes,
+      model: structure.model,
+      bytes: structure.cleanedPng?.length ?? 0,
     },
     null,
     2,
   ),
 );
 
-if (r.cleanedPng) {
-  const outDir = join(caseDir, "reviews", "latest");
-  mkdirSync(outDir, { recursive: true });
+const dims = await redrawDimsClean(ref);
+console.log(
+  "dims:",
+  JSON.stringify(
+    {
+      status: dims.status,
+      notes: dims.notes,
+      model: dims.model,
+      bytes: dims.cleanedPng?.length ?? 0,
+    },
+    null,
+    2,
+  ),
+);
+
+const outDir = join(caseDir, "reviews", "latest");
+mkdirSync(outDir, { recursive: true });
+
+let ok = 0;
+if (structure.cleanedPng) {
   const path = join(outDir, "structure_ref_nano_smoke.png");
-  writeFileSync(path, r.cleanedPng);
+  writeFileSync(path, structure.cleanedPng);
   console.log("wrote", path);
-  process.exit(0);
+  ok++;
+}
+if (dims.cleanedPng) {
+  const path = join(outDir, "dims_ref_nano_smoke.png");
+  writeFileSync(path, dims.cleanedPng);
+  console.log("wrote", path);
+  ok++;
 }
 
-process.exit(r.status === "skipped" ? 2 : 1);
+if (ok === 2) process.exit(0);
+if (structure.status === "skipped" && dims.status === "skipped") process.exit(2);
+process.exit(1);

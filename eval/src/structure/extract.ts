@@ -10,7 +10,7 @@ import type {
 } from "../types";
 import {
   redrawStructureClean,
-  type StructureCleanStatus,
+  type ImageCleanStatus,
 } from "./redraw";
 
 const SYSTEM = `You are an expert architectural draftsperson reading floor-plan STRUCTURE only.
@@ -150,7 +150,7 @@ export interface ExtractStructureResult {
   structure: StructureReading;
   /** Cleaned walls-only PNG at original size when redraw succeeded. */
   cleanedPng: Buffer | null;
-  cleanedStatus: StructureCleanStatus;
+  cleanedStatus: ImageCleanStatus;
   notes: string[];
 }
 
@@ -158,7 +158,7 @@ export interface ExtractStructureResult {
  * Structure extract with a Nano Banana clean-redraw pass first.
  * 1) Gemini image model redraws walls/windows/doors only → PNG artifact
  * 2) Junctions + wall spans read from that cleaned image (fallback: original)
- * Dims stay on the original annotated images (caller responsibility).
+ * Dim extract uses its own dims-only redraw (caller responsibility).
  * Coords stored in original image space.
  */
 export async function extractStructure(
@@ -179,7 +179,7 @@ export async function extractStructure(
   notes.push(`Structure vision: ${client.provider} / ${client.model}`);
 
   let cleanedPng: Buffer | null = null;
-  let cleanedStatus: StructureCleanStatus = "skipped";
+  let cleanedStatus: ImageCleanStatus = "skipped";
   let source = png;
 
   if (!opts?.skipClean) {
