@@ -7,7 +7,7 @@
  * map back to the original image (never divide by padded dims).
  */
 
-export type VisionResolutionTier = "standard" | "high";
+export type VisionResolutionTier = "standard" | "high" | "gemini";
 
 export interface VisionResizeLimits {
   maxEdge: number;
@@ -16,13 +16,15 @@ export interface VisionResizeLimits {
 
 /** Standard: 1568 edge / 1568 tokens. High-res: 2576 / 4784 (Sonnet 5, Opus 4.7+, Fable). */
 export function limitsForTier(tier: VisionResolutionTier): VisionResizeLimits {
+  if (tier === "gemini") return { maxEdge: 4096, maxTokens: 12000 };
   if (tier === "high") return { maxEdge: 2576, maxTokens: 4784 };
   return { maxEdge: 1568, maxTokens: 1568 };
 }
 
-/** Infer tier from Anthropic model id. */
+/** Infer tier from model id (Anthropic Claude resize rules, or Gemini generous cap). */
 export function tierForModel(model: string): VisionResolutionTier {
   const m = model.toLowerCase();
+  if (m.includes("gemini")) return "gemini";
   if (
     m.includes("sonnet-5") ||
     m.includes("opus-4-7") ||

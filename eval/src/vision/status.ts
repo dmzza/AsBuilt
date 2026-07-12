@@ -1,4 +1,4 @@
-import type { VisionAvailability, VisionStatus } from "./types";
+import type { VisionAvailability, VisionStatus } from "../types";
 
 /**
  * Derive a review-facing vision status from score notes + dim counts.
@@ -13,11 +13,12 @@ export function deriveVisionStatus(opts: {
 }): VisionStatus {
   const { notes } = opts;
   const details = notes.filter((n) =>
-    /vision|api_key|anthropic|openai|extract failed|topology/i.test(n),
+    /vision|api_key|anthropic|openai|gemini|extract failed|topology/i.test(n),
   );
 
   const missingKey = notes.some(
     (n) =>
+      /No (GEMINI_API_KEY|ANTHROPIC_API_KEY|OPENAI_API_KEY)/i.test(n) ||
       /No ANTHROPIC_API_KEY or OPENAI_API_KEY/i.test(n) ||
       /No vision client — skipped vision dim/i.test(n),
   );
@@ -45,7 +46,7 @@ export function deriveVisionStatus(opts: {
       availability: "missing_key",
       label: "No API key",
       summary:
-        "AI was not used — set ANTHROPIC_API_KEY or OPENAI_API_KEY and re-score to get proposed dimensions and topology findings.",
+        "AI was not used — set GEMINI_API_KEY (preferred), ANTHROPIC_API_KEY, or OPENAI_API_KEY and re-score to get proposed dimensions and topology findings.",
       details,
     };
   }
@@ -66,7 +67,7 @@ export function deriveVisionStatus(opts: {
       availability: "missing_key",
       label: "No API key",
       summary:
-        "AI was not used — set ANTHROPIC_API_KEY or OPENAI_API_KEY and re-score to get proposed dimensions and topology findings.",
+        "AI was not used — set GEMINI_API_KEY (preferred), ANTHROPIC_API_KEY, or OPENAI_API_KEY and re-score to get proposed dimensions and topology findings.",
       details,
     };
   }

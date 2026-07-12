@@ -31,6 +31,14 @@ describe("Anthropic vision resizedSize", () => {
     expect(w).toBeGreaterThan(1000);
   });
 
+  test("gemini uses generous tier", () => {
+    expect(tierForModel("gemini-3.1-pro-preview")).toBe("gemini");
+    const [w, h] = resizedSizeForModel(5024, 2664, "gemini-3.1-pro-preview");
+    expect(w).toBeLessThanOrEqual(4096);
+    expect(h).toBeLessThanOrEqual(4096);
+    expect(w).toBeGreaterThan(2000);
+  });
+
   test("scalePointFromResized maps back to original", () => {
     const p = scalePointFromResized({ x: 100, y: 50 }, 2000, 1000, 1000, 500);
     expect(p.x).toBe(200);

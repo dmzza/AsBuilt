@@ -10,7 +10,7 @@ export {
   saveReviews,
 } from "./gold";
 export { writeReviewReport } from "./report";
-export { createVisionClient } from "./vision/client";
+export { createVisionClient, DEFAULT_GEMINI_VISION_MODEL } from "./vision/client";
 export { deriveVisionStatus, visionStatusTone } from "./vision/status";
 export {
   countImageTokens,

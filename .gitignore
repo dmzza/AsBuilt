@@ -144,6 +144,8 @@ vite.config.ts.timestamp-*
 
 # Eval run artifacts (keep cases + gold; regenerate reviews)
 eval/cases/**/reviews/
+# Durable Nano Banana cleaned rasters (local cache; seedable from reviews/latest)
+eval/cases/**/cleaned/
 
 # macOS
 .DS_Store
