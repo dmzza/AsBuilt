@@ -2,6 +2,9 @@
  * Interactive in-place review UI: dimensions and findings live on the image
  * (SVG overlay). Select a span on the drawing, drag endpoints, verify to gold.
  *
+ * Views: Original / Structure / Dimensions / Layout Diff, with a Ref↔Cand
+ * crossfade slider and a detection toggle whose meaning depends on the view.
+ *
  * When opened via `npm run eval:review` (local server), Verify/Export POST gold
  * into the case's gold/ directory. file:// fallback still downloads JSON.
  */
@@ -71,6 +74,13 @@ export function writeReviewReport(
         : `<div class="empty-hint">No candidate dimensions in this run.</div>`
       : "";
 
+  const o = result.overlays;
+  const structureRefSrc = o.structureRefPng || o.referencePng;
+  const structureCandSrc = o.structureCandPng || o.alignedCandidatePng;
+  const dimsRefSrc = o.dimsRefPng || o.referencePng;
+  const dimsCandSrc = o.dimsCandPng || o.alignedCandidatePng;
+  const layoutSrc = o.layoutDiffPng || o.onionSkinPng;
+
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -94,21 +104,53 @@ export function writeReviewReport(
   body { margin: 0; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
   header {
     flex: 0 0 auto;
-    display: flex; align-items: center; gap: 1.25rem; flex-wrap: wrap;
-    padding: 0.65rem 1rem; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+    padding: 0.55rem 1rem; border-bottom: 1px solid var(--line);
     background: var(--panel);
   }
   h1 { font-size: 0.95rem; font-weight: 600; margin: 0; letter-spacing: 0.04em; text-transform: uppercase; }
-  .scores { display: flex; gap: 0.9rem; font-variant-numeric: tabular-nums; font-size: 0.8rem; color: var(--muted); }
+  .scores { display: flex; gap: 0.85rem; font-variant-numeric: tabular-nums; font-size: 0.8rem; color: var(--muted); }
   .scores b { color: var(--accent); font-weight: 600; }
-  .toolbar { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-left: auto; align-items: center; }
-  .toolbar button, .chip, .inspector button, .list button {
+  .header-right { display: flex; gap: 0.45rem; flex-wrap: wrap; margin-left: auto; align-items: center; }
+  .controls {
+    flex: 0 0 auto;
+    display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+    padding: 0.45rem 1rem; border-bottom: 1px solid var(--line);
+    background: #181714;
+  }
+  .control-group {
+    display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap;
+  }
+  .control-label {
+    font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.07em;
+    color: var(--muted); margin-right: 0.15rem;
+  }
+  .seg {
+    display: inline-flex; border: 1px solid #444038; border-radius: 5px; overflow: hidden;
+  }
+  .seg button {
+    background: #2a2824; color: var(--text); border: none; border-right: 1px solid #444038;
+    padding: 0.32rem 0.7rem; cursor: pointer; font-size: 0.78rem;
+  }
+  .seg button:last-child { border-right: none; }
+  .seg button.active { background: #2f3f66; color: #dce8ff; }
+  .controls button, .header-right button, .inspector button, .list button {
     background: #2a2824; color: var(--text); border: 1px solid #444038;
     padding: 0.3rem 0.65rem; border-radius: 4px; cursor: pointer; font-size: 0.8rem;
   }
-  .toolbar button.active { background: #2f3f66; border-color: var(--accent); }
-  .toolbar button.primary, .inspector button.primary {
+  .controls button.active { background: #2f3f66; border-color: var(--accent); }
+  .controls button.primary, .header-right button.primary, .inspector button.primary {
     background: #1f3d2e; border-color: #3a6b52; color: #c8f0d8;
+  }
+  .blend {
+    display: flex; align-items: center; gap: 0.45rem;
+    min-width: 14rem; flex: 1 1 14rem; max-width: 22rem;
+  }
+  .blend label { font-size: 0.72rem; color: var(--muted); white-space: nowrap; }
+  .blend label.ref { color: var(--accent); }
+  .blend label.cand { color: var(--cand); }
+  .blend input[type=range] {
+    flex: 1; accent-color: var(--accent); cursor: pointer;
   }
   .server-pill, .ai-status-pill {
     font-size: 0.72rem; padding: 0.15rem 0.5rem; border-radius: 999px;
@@ -154,7 +196,11 @@ export function writeReviewReport(
     margin: 1rem;
     line-height: 0;
     box-shadow: 0 0 0 1px var(--line);
-    /* Zoom via explicit width (not CSS transform) so layout == visual. */
+  }
+  .stage .layers {
+    position: relative;
+    display: block;
+    line-height: 0;
   }
   .stage img {
     display: block;
@@ -164,6 +210,12 @@ export function writeReviewReport(
     user-select: none;
     -webkit-user-drag: none;
     pointer-events: none;
+  }
+  .stage img#bg-ref { position: relative; }
+  .stage img#bg-cand {
+    position: absolute; left: 0; top: 0;
+    width: 100%; height: 100%;
+    object-fit: fill;
   }
   .stage svg.overlay {
     position: absolute; left: 0; top: 0;
@@ -264,6 +316,7 @@ export function writeReviewReport(
   .list button .meta { color: var(--muted); font-size: 0.72rem; }
   .notes { font-size: 0.72rem; color: var(--muted); white-space: pre-wrap; margin-top: 0.5rem; }
   .zoom-bar { display: flex; gap: 0.35rem; align-items: center; font-size: 0.75rem; color: var(--muted); }
+  #detect-label { font-size: 0.72rem; color: var(--muted); min-width: 7rem; }
   #toast {
     position: fixed; bottom: 1.25rem; left: 50%; transform: translateX(-50%);
     background: #1f3d2e; color: #c8f0d8; border: 1px solid #3a6b52;
@@ -284,46 +337,55 @@ export function writeReviewReport(
     <span>dims <b>${(score.dims * 100).toFixed(1)}%</b></span>
     <span>spans <b>${(score.spans * 100).toFixed(1)}%</b></span>
   </div>
-  <div class="toolbar">
+  <div class="header-right">
     <span class="ai-status-pill ${tone}" id="ai-status-pill" title="${esc(vs.summary)}">${esc(vs.label)}</span>
     <span class="server-pill" id="server-pill">file mode</span>
-    <div class="zoom-bar">
-      <button type="button" id="zoom-out">−</button>
-      <span id="zoom-label">100%</span>
-      <button type="button" id="zoom-in">+</button>
-      <button type="button" id="zoom-fit">Fit</button>
-    </div>
-    <button type="button" class="active" data-bg="onion_skin.png">Onion</button>
-    <button type="button" data-bg="reference.png">Reference</button>
-    <button type="button" data-bg="aligned_candidate.png">Aligned</button>
-    <button type="button" data-bg="candidate.png">Candidate</button>
-    <button type="button" data-bg="layout_diff.png">Layout diff</button>
-    ${result.overlays.structureRefPng ? `<button type="button" data-bg="${esc(result.overlays.structureRefPng)}">Struct ref</button>` : ""}
-    ${result.overlays.structureCandPng ? `<button type="button" data-bg="${esc(result.overlays.structureCandPng)}">Struct cand</button>` : ""}
-    ${result.overlays.dimsRefPng ? `<button type="button" data-bg="${esc(result.overlays.dimsRefPng)}">Dims ref</button>` : ""}
-    ${result.overlays.dimsCandPng ? `<button type="button" data-bg="${esc(result.overlays.dimsCandPng)}">Dims cand</button>` : ""}
-    <button type="button" id="toggle-ref" class="active">Ref dims</button>
-    <button type="button" id="toggle-cand" class="active">Cand dims</button>
-    <button type="button" id="toggle-ref-struct" class="active">Ref structure</button>
-    <button type="button" id="toggle-cand-struct">Cand structure</button>
-    <button type="button" id="toggle-findings" class="active">Findings</button>
     <button type="button" class="primary" id="export-gold">Save all gold</button>
   </div>
 </header>
 ${visionBannerHtml(vs)}
+<div class="controls">
+  <div class="control-group">
+    <span class="control-label">View</span>
+    <div class="seg" id="view-seg" role="tablist">
+      <button type="button" class="active" data-view="original">Original</button>
+      <button type="button" data-view="structure">Structure</button>
+      <button type="button" data-view="dimensions">Dimensions</button>
+      <button type="button" data-view="layout">Layout Diff</button>
+    </div>
+  </div>
+  <div class="control-group">
+    <span class="control-label">Detections</span>
+    <button type="button" id="toggle-detections" class="active">On</button>
+    <span id="detect-label">structure + dims</span>
+  </div>
+  <div class="blend" title="Crossfade Reference ↔ Candidate for the current view">
+    <label class="ref" for="blend">Ref</label>
+    <input type="range" id="blend" min="0" max="100" value="50" />
+    <label class="cand" for="blend">Cand</label>
+  </div>
+  <div class="zoom-bar">
+    <button type="button" id="zoom-out">−</button>
+    <span id="zoom-label">100%</span>
+    <button type="button" id="zoom-in">+</button>
+    <button type="button" id="zoom-fit">Fit</button>
+  </div>
+</div>
 <main>
   <div class="stage-wrap" id="stage-wrap">
     <div class="stage" id="stage">
-      <img id="bg" src="onion_skin.png" alt="plan"/>
+      <div class="layers">
+        <img id="bg-ref" src="${esc(o.referencePng)}" alt="reference"/>
+        <img id="bg-cand" src="${esc(o.alignedCandidatePng)}" alt="candidate"/>
+      </div>
       <svg class="overlay" id="overlay" xmlns="http://www.w3.org/2000/svg"></svg>
     </div>
   </div>
   <aside class="side">
     <div class="side-scroll">
       <p class="hint">
-        Layers: <b>dims</b> (annotation values/spans) vs <b>structure</b> (wall junctions/spans). Toggle independently.
-        Use <b>Struct ref/cand</b> for the walls-only redraw and <b>Dims ref/cand</b> for the dimensions-only redraw used in extract.
-        Drag dim endpoint handles to correct spans, then <b>Verify → gold</b>.
+        Pick a <b>view</b>, toggle <b>detections</b> for that view, and drag the <b>Ref↔Cand</b> slider to crossfade.
+        Dim endpoint handles work best on <b>Dimensions</b> (or Original with detections on). Verify → gold still saves to the case.
       </p>
       ${
         result.structureCleaned
@@ -356,6 +418,32 @@ ${visionBannerHtml(vs)}
 </main>
 <div id="toast"></div>
 <script>
+const VIEW_SRCS = {
+  original: {
+    ref: ${JSON.stringify(o.referencePng)},
+    cand: ${JSON.stringify(o.alignedCandidatePng)},
+  },
+  structure: {
+    ref: ${JSON.stringify(structureRefSrc)},
+    cand: ${JSON.stringify(structureCandSrc)},
+  },
+  dimensions: {
+    ref: ${JSON.stringify(dimsRefSrc)},
+    cand: ${JSON.stringify(dimsCandSrc)},
+  },
+  layout: {
+    ref: ${JSON.stringify(layoutSrc)},
+    cand: ${JSON.stringify(layoutSrc)},
+  },
+};
+
+const DETECT_LABELS = {
+  original: 'structure + dims',
+  structure: 'structure only',
+  dimensions: 'dims only',
+  layout: 'findings',
+};
+
 const state = {
   reference: ${JSON.stringify(result.referenceDimsUsed)},
   candidate: ${JSON.stringify(result.candidateDimsUsed)},
@@ -370,12 +458,9 @@ const state = {
   notes: ${JSON.stringify(result.notes)},
   visionStatus: ${JSON.stringify(vs)},
   selected: null,
-  showRef: true,
-  showCand: true,
-  showRefStruct: true,
-  showCandStruct: false,
-  showFindings: true,
-  bg: 'onion_skin.png',
+  view: 'original',
+  showDetections: true,
+  blend: 0.5,
   zoom: 1,
   imgW: 0,
   imgH: 0,
@@ -384,15 +469,20 @@ const state = {
   server: false,
 };
 
+/** Cand layer for Original is aligned into ref space; cleaned cand may be native-sized (CSS-stretched). */
 function isCandNativeBg() {
-  return state.bg === 'candidate.png' || state.bg === (state.overlays && state.overlays.structureCandPng);
+  return false;
 }
 
-const bgEl = document.getElementById('bg');
+const bgRef = document.getElementById('bg-ref');
+const bgCand = document.getElementById('bg-cand');
 const overlay = document.getElementById('overlay');
 const stage = document.getElementById('stage');
 const inspector = document.getElementById('inspector');
 const toastEl = document.getElementById('toast');
+const blendEl = document.getElementById('blend');
+const detectBtn = document.getElementById('toggle-detections');
+const detectLabel = document.getElementById('detect-label');
 
 function toast(msg, err) {
   toastEl.textContent = msg;
@@ -443,7 +533,6 @@ async function persistGold(reason) {
       throw e;
     }
   }
-  // file:// fallback
   download('gold.dims.json', payload);
   toast(\`\${reason} · downloaded gold.dims.json (\${n} dims). Import with eval:review --import-gold\`);
 }
@@ -484,10 +573,9 @@ function labelPlacement(span, tw, th) {
   const dx = span.b.x - span.a.x;
   const dy = span.b.y - span.a.y;
   const len = Math.hypot(dx, dy) || 1;
-  // outward normal (prefer upward-ish for horizontal walls so labels sit outside)
   let nx = -dy / len;
   let ny = dx / len;
-  if (ny > 0) { nx = -nx; ny = -ny; } // flip so offset tends "above" in screen space
+  if (ny > 0) { nx = -nx; ny = -ny; }
   const offset = 36;
   const m = mid(span.a, span.b);
   const anchor = { x: m.x + nx * 10, y: m.y + ny * 10 };
@@ -500,6 +588,23 @@ function recordCorrect(dimId, patch) {
   state.decisions.push({ dimId, action: 'correct', dimPatch: patch, at: new Date().toISOString() });
 }
 
+function detectionFlags() {
+  if (!state.showDetections) {
+    return { showRef: false, showCand: false, showRefStruct: false, showCandStruct: false, showFindings: false };
+  }
+  if (state.view === 'layout') {
+    return { showRef: false, showCand: false, showRefStruct: false, showCandStruct: false, showFindings: true };
+  }
+  if (state.view === 'structure') {
+    return { showRef: false, showCand: false, showRefStruct: true, showCandStruct: true, showFindings: false };
+  }
+  if (state.view === 'dimensions') {
+    return { showRef: true, showCand: true, showRefStruct: false, showCandStruct: false, showFindings: false };
+  }
+  // original: both structure and dims
+  return { showRef: true, showCand: true, showRefStruct: true, showCandStruct: true, showFindings: false };
+}
+
 function setSelected(sel, opts = {}) {
   state.selected = sel;
   if (!opts.skipOverlay) renderOverlay();
@@ -509,7 +614,6 @@ function setSelected(sel, opts = {}) {
   if (sel?.kind === 'dim' && !opts.skipScroll) scrollDimIntoView(sel.side, sel.id);
 }
 
-/** Update selected classes without destroying SVG nodes (keeps pointer capture alive). */
 function syncSelectionClasses() {
   overlay.querySelectorAll('.dim-group').forEach(g => {
     const on = state.selected?.kind === 'dim'
@@ -531,11 +635,9 @@ function syncSelectionClasses() {
   });
 }
 
-/** Screen-stable handle radius in image space (zoom otherwise shrinks hit targets). */
 function handleRadii(selected) {
   const z = Math.max(0.05, state.zoom);
   const vis = Math.max(selected ? 9 : 7, (selected ? 11 : 9) / z);
-  // Cap image-space hit radius so zoomed-out pads don't swallow neighboring handles.
   const hit = Math.min(48, Math.max(vis + 6, 16 / z));
   return { vis, hit };
 }
@@ -545,7 +647,6 @@ function scrollDimIntoView(side, id) {
   if (!g) return;
   const wrap = document.getElementById('stage-wrap');
   const bb = g.getBBox();
-  // Stage CSS width is imgW*zoom, so user-space × zoom == layout pixels.
   const zx = state.zoom;
   wrap.scrollTo({
     left: Math.max(0, (bb.x + bb.width / 2) * zx - wrap.clientWidth / 2),
@@ -560,9 +661,10 @@ function renderOverlay() {
   overlay.setAttribute('width', state.imgW);
   overlay.setAttribute('height', state.imgH);
 
+  const flags = detectionFlags();
   const parts = [];
 
-  if (state.showFindings && !isCandNativeBg()) {
+  if (flags.showFindings) {
     for (const f of state.findings) {
       const b = f.alignedBBox || f.referenceBBox;
       if (!b) continue;
@@ -611,14 +713,12 @@ function renderOverlay() {
     }
   };
 
-  drawSide('reference', state.showRef);
-  drawSide('candidate', state.showCand);
+  drawSide('reference', flags.showRef);
+  drawSide('candidate', flags.showCand);
 
   const drawStructure = (side, show) => {
     if (!show) return;
-    // Candidate-native canvases (raw cand / cleaned cand) hide ref structure.
     if (isCandNativeBg() && side === 'reference') return;
-    // Cleaned-ref canvas is ref pixel space — keep ref structure, transform cand.
     const struct = side === 'reference' ? state.referenceStructure : state.candidateStructure;
     if (!struct) return;
     const mapPt = (p) => {
@@ -638,14 +738,13 @@ function renderOverlay() {
       parts.push(\`<circle class="\${jCls}\${sel ? ' selected' : ''}" data-struct="junction" data-side="\${side}" data-id="\${escAttr(j.id)}" cx="\${p.x}" cy="\${p.y}" r="7"/>\`);
     }
   };
-  drawStructure('reference', state.showRefStruct);
-  drawStructure('candidate', state.showCandStruct);
+  drawStructure('reference', flags.showRefStruct);
+  drawStructure('candidate', flags.showCandStruct);
 
   overlay.innerHTML = parts.join('');
   bindOverlayEvents();
 }
 
-/** Mutate span/handle/label geometry in place during drag (no innerHTML rebuild). */
 function updateDimGeometry(side, id) {
   const raw = findDim(side, id);
   if (!raw) return;
@@ -700,12 +799,6 @@ function escXml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-/**
- * Map viewport client coords → image/SVG user space.
- * Prefer getBoundingClientRect over getScreenCTM: CSS transforms on ancestors
- * (and some WebKit quirks) make CTM unreliable, while the overlay's visual
- * rect always reflects the current zoom whether we scale via width or transform.
- */
 function clientToImage(evt) {
   const rect = overlay.getBoundingClientRect();
   if (!rect.width || !rect.height || !state.imgW || !state.imgH) return { x: 0, y: 0 };
@@ -715,7 +808,6 @@ function clientToImage(evt) {
   };
 }
 
-/** Display-space point of a dim endpoint (after candidate→ref alignment). */
 function endpointDisplay(side, id, which) {
   const raw = findDim(side, id);
   if (!raw) return { x: 0, y: 0 };
@@ -738,7 +830,7 @@ function bindOverlayEvents() {
     const id = g.getAttribute('data-id');
     g.querySelectorAll('.hit, .label-hit, .span').forEach(el => {
       el.addEventListener('click', (e) => {
-        if (state.dragMoved) return; // suppress click after a drag
+        if (state.dragMoved) return;
         e.stopPropagation();
         setSelected({ kind: 'dim', side, id });
       });
@@ -749,9 +841,7 @@ function bindOverlayEvents() {
         e.stopPropagation();
         e.preventDefault();
         const which = h.getAttribute('data-which');
-        // Select without rebuilding SVG — rebuilding would detach this handle and lose capture.
         state.selected = { kind: 'dim', side, id };
-        // Grab offset in image space so the endpoint doesn't jump to the cursor.
         const imgPt = clientToImage(e);
         const handlePt = endpointDisplay(side, id, which);
         state.drag = {
@@ -814,7 +904,6 @@ function endDrag(e) {
   if (d && state.dragMoved) recordCorrect(id, { span: { a: { ...d.span.a }, b: { ...d.span.b } } });
   state.drag = null;
   overlay.classList.remove('dragging');
-  // Final rebuild so labels/handles settle cleanly after zoom-compensated sizes.
   renderOverlay();
   renderInspector();
 }
@@ -835,7 +924,6 @@ function onDragMove(e) {
   updateInspectorSpanOnly();
 }
 
-// Window-level listeners survive CSS zoom and keep dragging even if the capture target is lost.
 window.addEventListener('pointermove', onDragMove);
 window.addEventListener('pointerup', endDrag);
 window.addEventListener('pointercancel', endDrag);
@@ -1056,16 +1144,12 @@ function renderInspector() {
 }
 
 function applyZoom() {
-  // Size the bitmap (and thus the absolutely-positioned SVG overlay) to zoomed
-  // CSS pixels. viewBox stays in image pixels, so getBoundingClientRect mapping
-  // is always imgW/rect.width == 1/zoom — no CSS transform involved.
   stage.style.transform = '';
   stage.style.transformOrigin = '';
   if (state.imgW) {
-    bgEl.style.width = \`\${state.imgW * state.zoom}px\`;
+    bgRef.style.width = \`\${state.imgW * state.zoom}px\`;
   }
   document.getElementById('zoom-label').textContent = Math.round(state.zoom * 100) + '%';
-  // Rebuild so handle hit radii stay screen-stable under zoom.
   if (state.imgW && !state.drag) renderOverlay();
 }
 
@@ -1078,47 +1162,54 @@ function fitZoom() {
   applyZoom();
 }
 
-bgEl.addEventListener('load', () => {
-  state.imgW = bgEl.naturalWidth;
-  state.imgH = bgEl.naturalHeight;
+function applyBlend() {
+  bgCand.style.opacity = String(state.blend);
+  bgRef.style.opacity = String(1);
+}
+
+function applyView() {
+  const srcs = VIEW_SRCS[state.view] || VIEW_SRCS.original;
+  const refChanged = bgRef.getAttribute('src') !== srcs.ref;
+  const candChanged = bgCand.getAttribute('src') !== srcs.cand;
+  if (refChanged) bgRef.src = srcs.ref;
+  if (candChanged) bgCand.src = srcs.cand;
+  detectLabel.textContent = DETECT_LABELS[state.view] || '';
+  document.querySelectorAll('#view-seg [data-view]').forEach(b => {
+    b.classList.toggle('active', b.getAttribute('data-view') === state.view);
+  });
+  applyBlend();
+  // If src unchanged, still refresh overlays for detection mode.
+  if (!refChanged && state.imgW) renderOverlay();
+}
+
+function onBgReady() {
+  if (!bgRef.naturalWidth) return;
+  state.imgW = bgRef.naturalWidth;
+  state.imgH = bgRef.naturalHeight;
   renderOverlay();
   fitZoom();
-});
+}
 
-document.querySelectorAll('.toolbar [data-bg]').forEach(btn => {
+bgRef.addEventListener('load', onBgReady);
+
+document.querySelectorAll('#view-seg [data-view]').forEach(btn => {
   btn.addEventListener('click', () => {
-    document.querySelectorAll('.toolbar [data-bg]').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    state.bg = btn.getAttribute('data-bg');
-    bgEl.src = state.bg;
+    state.view = btn.getAttribute('data-view');
+    applyView();
   });
 });
 
-document.getElementById('toggle-ref').onclick = (e) => {
-  state.showRef = !state.showRef;
-  e.currentTarget.classList.toggle('active', state.showRef);
+detectBtn.onclick = () => {
+  state.showDetections = !state.showDetections;
+  detectBtn.classList.toggle('active', state.showDetections);
+  detectBtn.textContent = state.showDetections ? 'On' : 'Off';
   renderOverlay();
 };
-document.getElementById('toggle-cand').onclick = (e) => {
-  state.showCand = !state.showCand;
-  e.currentTarget.classList.toggle('active', state.showCand);
-  renderOverlay();
-};
-document.getElementById('toggle-ref-struct').onclick = (e) => {
-  state.showRefStruct = !state.showRefStruct;
-  e.currentTarget.classList.toggle('active', state.showRefStruct);
-  renderOverlay();
-};
-document.getElementById('toggle-cand-struct').onclick = (e) => {
-  state.showCandStruct = !state.showCandStruct;
-  e.currentTarget.classList.toggle('active', state.showCandStruct);
-  renderOverlay();
-};
-document.getElementById('toggle-findings').onclick = (e) => {
-  state.showFindings = !state.showFindings;
-  e.currentTarget.classList.toggle('active', state.showFindings);
-  renderOverlay();
-};
+
+blendEl.addEventListener('input', () => {
+  state.blend = Number(blendEl.value) / 100;
+  applyBlend();
+});
 
 document.getElementById('zoom-in').onclick = () => { state.zoom = Math.min(4, state.zoom * 1.2); applyZoom(); };
 document.getElementById('zoom-out').onclick = () => { state.zoom = Math.max(0.15, state.zoom / 1.2); applyZoom(); };
@@ -1130,12 +1221,9 @@ document.getElementById('notes').textContent = state.notes.join('\\n');
 detectServer();
 renderLists();
 renderInspector();
-if (bgEl.complete && bgEl.naturalWidth) {
-  state.imgW = bgEl.naturalWidth;
-  state.imgH = bgEl.naturalHeight;
-  renderOverlay();
-  fitZoom();
-}
+applyView();
+applyBlend();
+if (bgRef.complete && bgRef.naturalWidth) onBgReady();
 </script>
 </body>
 </html>`;

@@ -21,8 +21,8 @@ export interface VisionClient {
 }
 
 /** Default multimodal reasoning model (not image-gen / Nano Banana). */
-export const DEFAULT_GEMINI_VISION_MODEL = "gemini-3.1-pro-preview";
-const FALLBACK_GEMINI_VISION_MODEL = "gemini-3-pro-preview";
+export const DEFAULT_GEMINI_VISION_MODEL = "gemini-3.5-flash";
+const FALLBACK_GEMINI_VISION_MODEL = "gemini-3-flash-preview";
 
 function resolveVisionProviderOverride(): VisionProvider | null {
   const raw = process.env.EVAL_VISION_PROVIDER?.trim().toLowerCase();
@@ -61,7 +61,7 @@ function pickProvider(): { provider: VisionProvider; model: string } | null {
     return null;
   }
 
-  // Default: Gemini 3.1 Pro for vision extract; Anthropic/OpenAI as fallbacks.
+  // Default: Gemini 3.5 Flash for vision extract; Anthropic/OpenAI as fallbacks.
   for (const c of candidates) {
     if (c.ok) return { provider: c.provider, model: c.model };
   }
