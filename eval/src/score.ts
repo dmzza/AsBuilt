@@ -60,6 +60,12 @@ export async function scorePlanPair(
     reference: "skipped",
     candidate: "skipped",
   };
+  let dimsRefCleaned: Buffer | null = null;
+  let dimsCandCleaned: Buffer | null = null;
+  let dimsCleaned: ScorePlanPairResult["dimsCleaned"] = {
+    reference: "skipped",
+    candidate: "skipped",
+  };
 
   if (useVision) {
     const extractOpts = { tiles: input.visionTiles !== false };
@@ -67,8 +73,7 @@ export async function scorePlanPair(
       notes.push("Vision dim extract: one-shot full-page only (tiles disabled)");
     }
 
-    // Structure layer (walls/junctions) — Nano Banana clean redraw first, then extract.
-    // Dim extract still uses the original annotated images below.
+    // Structure layer (walls/junctions) — Nano Banana walls-only redraw, then extract.
     {
       const sx = await extractStructure(input.reference);
       referenceStructure = sx.structure;
@@ -84,9 +89,12 @@ export async function scorePlanPair(
       notes.push(...sx.notes.map((n) => `cand-structure: ${n}`));
     }
 
+    // Dim layer — Nano Banana dims-only redraw, then extract (layout/align stay on originals).
     if (!input.referenceGold?.length) {
       const ex = await extractDimensions(input.reference, extractOpts);
       proposedReferenceReadings = ex.readings;
+      dimsRefCleaned = ex.cleanedPng;
+      dimsCleaned.reference = ex.cleanedStatus;
       notes.push(...ex.notes.map((n) => `ref: ${n}`));
     } else {
       notes.push(`Using ${input.referenceGold.length} verified reference gold dim(s)`);
@@ -94,6 +102,8 @@ export async function scorePlanPair(
     if (!input.candidateGold?.length) {
       const ex = await extractDimensions(input.candidate, extractOpts);
       proposedCandidateReadings = ex.readings;
+      dimsCandCleaned = ex.cleanedPng;
+      dimsCleaned.candidate = ex.cleanedStatus;
       notes.push(...ex.notes.map((n) => `cand: ${n}`));
     } else {
       notes.push(`Using ${input.candidateGold.length} verified candidate gold dim(s)`);
@@ -177,6 +187,8 @@ export async function scorePlanPair(
   };
   if (structureRefCleaned) overlays.structureRefPng = "structure_ref.png";
   if (structureCandCleaned) overlays.structureCandPng = "structure_cand.png";
+  if (dimsRefCleaned) overlays.dimsRefPng = "dims_ref.png";
+  if (dimsCandCleaned) overlays.dimsCandPng = "dims_cand.png";
 
   if (artifactDir) {
     mkdirSync(artifactDir, { recursive: true });
@@ -190,6 +202,12 @@ export async function scorePlanPair(
     }
     if (structureCandCleaned && overlays.structureCandPng) {
       writeFileSync(join(artifactDir, overlays.structureCandPng), structureCandCleaned);
+    }
+    if (dimsRefCleaned && overlays.dimsRefPng) {
+      writeFileSync(join(artifactDir, overlays.dimsRefPng), dimsRefCleaned);
+    }
+    if (dimsCandCleaned && overlays.dimsCandPng) {
+      writeFileSync(join(artifactDir, overlays.dimsCandPng), dimsCandCleaned);
     }
 
     // Dim overlay on onion skin in reference space (ref dims + aligned cand spans drawn via findings)
@@ -214,6 +232,7 @@ export async function scorePlanPair(
           referenceStructure,
           candidateStructure,
           structureCleaned,
+          dimsCleaned,
           overlays,
         },
         null,
@@ -232,6 +251,7 @@ export async function scorePlanPair(
     referenceStructure,
     candidateStructure,
     structureCleaned,
+    dimsCleaned,
     transform,
     overlays,
     notes,

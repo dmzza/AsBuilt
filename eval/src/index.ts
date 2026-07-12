@@ -22,9 +22,15 @@ export {
 export { extractDimensions } from "./dims/extract";
 export { extractStructure } from "./structure/extract";
 export {
+  redrawImageClean,
   redrawStructureClean,
+  redrawDimsClean,
   resolveGeminiApiKey,
   resolveNanoBananaModel,
+  STRUCTURE_REDRAW_PROMPT,
+  DIMS_REDRAW_PROMPT,
+  type ImageCleanResult,
+  type ImageCleanStatus,
   type StructureCleanResult,
   type StructureCleanStatus,
 } from "./structure/redraw";
