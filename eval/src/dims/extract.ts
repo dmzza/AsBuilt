@@ -5,6 +5,7 @@ import {
   type ImageCleanStatus,
 } from "../structure/redraw";
 import { createVisionClient, parseJsonBlock, type VisionClient } from "../vision/client";
+import { resolveModelCoordCanvas } from "../vision/coords";
 import { imageMeta, prepareVisionImage } from "../vision/prepare";
 import { scalePointFromResized } from "../vision/resize";
 import type { BBox, DimReading, DimSpan, Point } from "../types";
@@ -160,6 +161,7 @@ Image size: ${visionW} x ${visionH} pixels.
 
 Find ALL written architectural dimensions on this floor plan.
 Return absolute pixel coordinates in this ${visionW}×${visionH} image (origin top-left).
+Do NOT use normalized 0–1000 boxes — coordinates must be pixels matching width/height below.
 Return JSON only:
 {
   "width": ${visionW},
@@ -192,16 +194,60 @@ measured endpoints on the building geometry (wall corners/faces), not the text.`
     images: [{ data: send, mediaType }],
     json: true,
   });
-  const payload = parseJsonBlock<ExtractPayload>(text);
+  let payload: ExtractPayload;
+  try {
+    payload = parseJsonBlock<ExtractPayload>(text);
+  } catch {
+    const retry = await client.complete({
+      system: SYSTEM,
+      prompt: `${prompt}\n\nPrevious response was invalid JSON. Reply with a single valid JSON object only.`,
+      images: [{ data: send, mediaType }],
+      json: true,
+    });
+    payload = parseJsonBlock<ExtractPayload>(retry);
+  }
   const dims = payload.dimensions ?? [];
+  const samplePoints: Point[] = [];
+  for (const d of dims) {
+    if (d?.span?.a) samplePoints.push(d.span.a);
+    if (d?.span?.b) samplePoints.push(d.span.b);
+    if (d?.labelBBox) {
+      samplePoints.push({ x: d.labelBBox.x, y: d.labelBBox.y });
+      samplePoints.push({
+        x: d.labelBBox.x + d.labelBBox.w,
+        y: d.labelBBox.y + d.labelBBox.h,
+      });
+    }
+  }
+  const canvas = resolveModelCoordCanvas({
+    sentW: visionW,
+    sentH: visionH,
+    payloadW: payload.width,
+    payloadH: payload.height,
+    points: samplePoints,
+  });
+  const { coordW, coordH } = canvas;
   const out: DimReading[] = [];
   dims.forEach((d, i) => {
-    const n = normalizeReading(d, i, visionW, visionH, origW, origH);
+    const n = normalizeReading(d, i, coordW, coordH, origW, origH);
     if (n) out.push(n);
   });
-  const resizeNote = didResize
-    ? `Pre-resized ${origW}×${origH} → ${visionW}×${visionH} (Claude ${client.model} tier); coords scaled back to original`
-    : undefined;
+  const resizeNoteParts: string[] = [];
+  if (didResize) {
+    resizeNoteParts.push(
+      `Pre-resized ${origW}×${origH} → ${visionW}×${visionH} (${client.provider} ${client.model} tier)`,
+    );
+  }
+  if (canvas.note) resizeNoteParts.push(canvas.note);
+  else if (coordW !== visionW || coordH !== visionH) {
+    resizeNoteParts.push(
+      `coords mapped from model canvas ${coordW}×${coordH} (sent ${visionW}×${visionH})`,
+    );
+  }
+  if (resizeNoteParts.length) {
+    resizeNoteParts.push("coords scaled back to original");
+  }
+  const resizeNote = resizeNoteParts.length ? resizeNoteParts.join("; ") : undefined;
   return { readings: out, resizeNote };
 }
 
@@ -292,13 +338,19 @@ export interface ExtractDimensionsResult {
  */
 export async function extractDimensions(
   png: Buffer,
-  opts?: { client?: VisionClient | null; tiles?: boolean; skipClean?: boolean },
+  opts?: {
+    client?: VisionClient | null;
+    tiles?: boolean;
+    skipClean?: boolean;
+    /** Durable cache path for cleaned dims PNG (caseDir/cleaned/dims_*.png). */
+    cleanedCachePath?: string;
+  },
 ): Promise<ExtractDimensionsResult> {
   const notes: string[] = [];
   const client = opts?.client === undefined ? createVisionClient() : opts.client;
   if (!client) {
     notes.push(
-      "No ANTHROPIC_API_KEY or OPENAI_API_KEY — skipped vision dim extraction. Provide gold dims or set a key.",
+      "No GEMINI_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY — skipped vision dim extraction. Provide gold dims or set a key.",
     );
     return {
       readings: [],
@@ -314,13 +366,19 @@ export async function extractDimensions(
   let source = png;
 
   if (!opts?.skipClean) {
-    const redraw = await redrawDimsClean(png);
+    const redraw = await redrawDimsClean(png, {
+      cachePath: opts?.cleanedCachePath,
+    });
     notes.push(...redraw.notes);
     cleanedStatus = redraw.status;
     if (redraw.cleanedPng) {
       cleanedPng = redraw.cleanedPng;
       source = redraw.cleanedPng;
-      notes.push("Dim extract running on cleaned dims redraw");
+      notes.push(
+        redraw.status === "cached"
+          ? "Dim extract running on cached cleaned image"
+          : "Dim extract running on cleaned dims redraw",
+      );
     } else if (redraw.status === "fallback") {
       notes.push("Dim extract falling back to original image");
     }

@@ -1,4 +1,5 @@
 import { createVisionClient, parseJsonBlock, type VisionClient } from "../vision/client";
+import { resolveModelCoordCanvas } from "../vision/coords";
 import { prepareVisionImage } from "../vision/prepare";
 import { scalePointFromResized } from "../vision/resize";
 import type {
@@ -92,6 +93,7 @@ Extract the WALL STRUCTURE of this floor plan (junctions + wall spans).
 This should be a clean walls/windows/doors drawing — ignore any leftover annotations.
 
 Return absolute pixel coordinates in this ${visionW}×${visionH} image.
+Do NOT use normalized 0–1000 boxes — x/y must be in pixels with the same width/height you echo below.
 Return JSON only:
 {
   "width": ${visionW},
@@ -120,10 +122,39 @@ Prefer complete exterior + major interior walls. Skip tiny ticks and dim graphic
     images: [{ data: send, mediaType }],
     json: true,
   });
-  const payload = parseJsonBlock<StructurePayload>(text);
+  let payload: StructurePayload;
+  try {
+    payload = parseJsonBlock<StructurePayload>(text);
+  } catch (e) {
+    notes.push(`Structure JSON parse failed once (${(e as Error).message.slice(0, 80)}); retrying`);
+    const retry = await client.complete({
+      system: SYSTEM,
+      prompt: `${prompt}\n\nPrevious response was invalid JSON. Reply with a single valid JSON object only.`,
+      images: [{ data: send, mediaType }],
+      json: true,
+    });
+    payload = parseJsonBlock<StructurePayload>(retry);
+  }
+  const samplePoints: Point[] = [];
+  for (const j of payload.junctions ?? []) {
+    if (j) samplePoints.push({ x: j.x, y: j.y });
+  }
+  for (const w of payload.wallSpans ?? []) {
+    if (w?.a) samplePoints.push(w.a);
+    if (w?.b) samplePoints.push(w.b);
+  }
+  const canvas = resolveModelCoordCanvas({
+    sentW: visionW,
+    sentH: visionH,
+    payloadW: payload.width,
+    payloadH: payload.height,
+    points: samplePoints,
+  });
+  if (canvas.note) notes.push(canvas.note);
+  const { coordW, coordH } = canvas;
   const junctions: Junction[] = (payload.junctions ?? []).map((j, i) => ({
     id: j.id ?? `j-${i + 1}`,
-    point: toOrig({ x: j.x, y: j.y }, origW, origH, visionW, visionH),
+    point: toOrig({ x: j.x, y: j.y }, origW, origH, coordW, coordH),
     kind: parseKind(j.kind),
     confidence: j.confidence,
     verified: false,
@@ -132,8 +163,8 @@ Prefer complete exterior + major interior walls. Skip tiny ticks and dim graphic
     .filter((w) => w?.a && w?.b)
     .map((w, i) => ({
       id: w.id ?? `w-${i + 1}`,
-      a: toOrig(w.a, origW, origH, visionW, visionH),
-      b: toOrig(w.b, origW, origH, visionW, visionH),
+      a: toOrig(w.a, origW, origH, coordW, coordH),
+      b: toOrig(w.b, origW, origH, coordW, coordH),
       aJunctionId: w.aJunctionId,
       bJunctionId: w.bJunctionId,
       confidence: w.confidence,
@@ -163,7 +194,12 @@ export interface ExtractStructureResult {
  */
 export async function extractStructure(
   png: Buffer,
-  opts?: { client?: VisionClient | null; skipClean?: boolean },
+  opts?: {
+    client?: VisionClient | null;
+    skipClean?: boolean;
+    /** Durable cache path for cleaned structure PNG (caseDir/cleaned/structure_*.png). */
+    cleanedCachePath?: string;
+  },
 ): Promise<ExtractStructureResult> {
   const notes: string[] = [];
   const client = opts?.client === undefined ? createVisionClient() : opts.client;
@@ -183,13 +219,19 @@ export async function extractStructure(
   let source = png;
 
   if (!opts?.skipClean) {
-    const redraw = await redrawStructureClean(png);
+    const redraw = await redrawStructureClean(png, {
+      cachePath: opts?.cleanedCachePath,
+    });
     notes.push(...redraw.notes);
     cleanedStatus = redraw.status;
     if (redraw.cleanedPng) {
       cleanedPng = redraw.cleanedPng;
       source = redraw.cleanedPng;
-      notes.push("Structure extract running on cleaned redraw");
+      notes.push(
+        redraw.status === "cached"
+          ? "Structure extract running on cached cleaned image"
+          : "Structure extract running on cleaned redraw",
+      );
     } else if (redraw.status === "fallback") {
       notes.push("Structure extract falling back to original image");
     }

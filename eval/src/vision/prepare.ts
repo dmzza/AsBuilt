@@ -7,8 +7,9 @@ export async function imageMeta(buf: Buffer): Promise<{ width: number; height: n
 }
 
 /**
- * Pre-resize to the exact size Claude would use for this model so returned
- * pixel coords match the buffer we send; caller maps back to original.
+ * Pre-resize so returned pixel coords match the buffer we send; caller maps
+ * back to original. Claude models use Anthropic vision resize tiers; Gemini
+ * uses a more generous long-edge cap.
  * @see https://platform.claude.com/docs/en/build-with-claude/vision-coordinates
  */
 export async function prepareVisionImage(

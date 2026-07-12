@@ -169,6 +169,7 @@ export async function runCase(caseDir: string): Promise<ScorePlanPairResult> {
     tolerances: meta.tolerances,
     visionTiles: meta.visionTiles,
     artifactDir: outDir,
+    cleanedCacheDir: join(caseDir, "cleaned"),
   });
 
   const latest = join(caseDir, "reviews", "latest");
