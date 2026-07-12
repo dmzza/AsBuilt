@@ -24,7 +24,7 @@ function visionBannerHtml(vs: VisionStatus): string {
   if (vs.availability === "used") return "";
   const how =
     vs.availability === "missing_key"
-      ? "Add <code>ANTHROPIC_API_KEY</code> (or <code>OPENAI_API_KEY</code>) to <code>.env</code> for dim/structure vision. Structure/dims clean redraw also needs <code>GEMINI_API_KEY</code> (Nano Banana). Then re-score this case."
+      ? "Add <code>GEMINI_API_KEY</code> (preferred for vision extract + Nano Banana redraw), or <code>ANTHROPIC_API_KEY</code> / <code>OPENAI_API_KEY</code>, to <code>.env</code>. Then re-score this case."
       : vs.availability === "disabled"
         ? "Re-run with vision enabled to propose dimensions."
         : vs.availability === "gold_only"
@@ -327,12 +327,12 @@ ${visionBannerHtml(vs)}
       </p>
       ${
         result.structureCleaned
-          ? `<p class="hint">Structure redraw: ref <b>${esc(result.structureCleaned.reference)}</b>, cand <b>${esc(result.structureCleaned.candidate)}</b>.</p>`
+          ? `<p class="hint">Structure clean: ref <b>${esc(result.structureCleaned.reference)}</b>, cand <b>${esc(result.structureCleaned.candidate)}</b> (ok=redraw, cached=reused).</p>`
           : ""
       }
       ${
         result.dimsCleaned
-          ? `<p class="hint">Dims redraw: ref <b>${esc(result.dimsCleaned.reference)}</b>, cand <b>${esc(result.dimsCleaned.candidate)}</b>.</p>`
+          ? `<p class="hint">Dims clean: ref <b>${esc(result.dimsCleaned.reference)}</b>, cand <b>${esc(result.dimsCleaned.candidate)}</b> (ok=redraw, cached=reused).</p>`
           : ""
       }
       <h2>Selected</h2>

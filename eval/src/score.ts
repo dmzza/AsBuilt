@@ -68,21 +68,26 @@ export async function scorePlanPair(
   };
 
   if (useVision) {
-    const extractOpts = { tiles: input.visionTiles !== false };
-    if (input.visionTiles === false) {
+    const cleanedDir = input.cleanedCacheDir;
+    const tiles = input.visionTiles !== false;
+    if (!tiles) {
       notes.push("Vision dim extract: one-shot full-page only (tiles disabled)");
     }
 
     // Structure layer (walls/junctions) — Nano Banana walls-only redraw, then extract.
     {
-      const sx = await extractStructure(input.reference);
+      const sx = await extractStructure(input.reference, {
+        cleanedCachePath: cleanedDir ? join(cleanedDir, "structure_ref.png") : undefined,
+      });
       referenceStructure = sx.structure;
       structureRefCleaned = sx.cleanedPng;
       structureCleaned.reference = sx.cleanedStatus;
       notes.push(...sx.notes.map((n) => `ref-structure: ${n}`));
     }
     {
-      const sx = await extractStructure(input.candidate);
+      const sx = await extractStructure(input.candidate, {
+        cleanedCachePath: cleanedDir ? join(cleanedDir, "structure_cand.png") : undefined,
+      });
       candidateStructure = sx.structure;
       structureCandCleaned = sx.cleanedPng;
       structureCleaned.candidate = sx.cleanedStatus;
@@ -91,7 +96,10 @@ export async function scorePlanPair(
 
     // Dim layer — Nano Banana dims-only redraw, then extract (layout/align stay on originals).
     if (!input.referenceGold?.length) {
-      const ex = await extractDimensions(input.reference, extractOpts);
+      const ex = await extractDimensions(input.reference, {
+        tiles,
+        cleanedCachePath: cleanedDir ? join(cleanedDir, "dims_ref.png") : undefined,
+      });
       proposedReferenceReadings = ex.readings;
       dimsRefCleaned = ex.cleanedPng;
       dimsCleaned.reference = ex.cleanedStatus;
@@ -100,7 +108,10 @@ export async function scorePlanPair(
       notes.push(`Using ${input.referenceGold.length} verified reference gold dim(s)`);
     }
     if (!input.candidateGold?.length) {
-      const ex = await extractDimensions(input.candidate, extractOpts);
+      const ex = await extractDimensions(input.candidate, {
+        tiles,
+        cleanedCachePath: cleanedDir ? join(cleanedDir, "dims_cand.png") : undefined,
+      });
       proposedCandidateReadings = ex.readings;
       dimsCandCleaned = ex.cleanedPng;
       dimsCleaned.candidate = ex.cleanedStatus;

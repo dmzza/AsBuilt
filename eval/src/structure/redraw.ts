@@ -1,3 +1,5 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { GoogleGenAI } from "@google/genai";
 import sharp from "sharp";
 import { imageMeta } from "../vision/prepare";
@@ -20,7 +22,7 @@ const DEFAULT_MODEL = "gemini-3-pro-image";
 /** Cap long edge before send; model tops out around 4K. Scale result back to original. */
 const MAX_LONG_EDGE = 4096;
 
-export type ImageCleanStatus = "ok" | "fallback" | "skipped";
+export type ImageCleanStatus = "ok" | "cached" | "fallback" | "skipped";
 /** @deprecated Prefer ImageCleanStatus */
 export type StructureCleanStatus = ImageCleanStatus;
 
@@ -34,6 +36,17 @@ export interface ImageCleanResult {
 
 /** @deprecated Prefer ImageCleanResult */
 export type StructureCleanResult = ImageCleanResult;
+
+export interface ImageCleanOpts {
+  prompt: string;
+  label: string;
+  /**
+   * Durable cache path (e.g. caseDir/cleaned/structure_ref.png).
+   * When present and EVAL_FORCE_REDRAW is unset, load instead of calling Nano Banana.
+   * On successful redraw, also write here.
+   */
+  cachePath?: string;
+}
 
 export function resolveGeminiApiKey(): string | null {
   return (
@@ -51,6 +64,11 @@ export function resolveNanoBananaModel(): string {
     process.env.GEMINI_IMAGE_MODEL?.trim() ||
     DEFAULT_MODEL
   );
+}
+
+export function forceRedrawCleaned(): boolean {
+  const v = process.env.EVAL_FORCE_REDRAW?.trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
 }
 
 async function prepareForNanoBanana(png: Buffer): Promise<{
@@ -73,16 +91,55 @@ async function prepareForNanoBanana(png: Buffer): Promise<{
   return { send, origW, origH, sendW, sendH, didResize: true };
 }
 
+function tryLoadCachedCleaned(
+  cachePath: string | undefined,
+  label: string,
+): ImageCleanResult | null {
+  if (!cachePath || forceRedrawCleaned()) return null;
+  if (!existsSync(cachePath)) return null;
+  try {
+    const cleanedPng = readFileSync(cachePath);
+    if (cleanedPng.length < 100) return null;
+    return {
+      cleanedPng,
+      status: "cached",
+      notes: [`${label} cleaned loaded from cache: ${cachePath}`],
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistCleanedCache(cachePath: string | undefined, png: Buffer, notes: string[]): void {
+  if (!cachePath) return;
+  try {
+    mkdirSync(dirname(cachePath), { recursive: true });
+    writeFileSync(cachePath, png);
+    notes.push(`${labelOrPath(cachePath)} cached → ${cachePath}`);
+  } catch (e) {
+    notes.push(`Failed to write cleaned cache ${cachePath}: ${(e as Error).message}`);
+  }
+}
+
+function labelOrPath(p: string): string {
+  const base = p.split("/").pop() ?? p;
+  return `Cleaned ${base}`;
+}
+
 /**
  * Shared Nano Banana (Gemini image edit) redraw helper.
  * Returns a PNG at the original pixel size when successful.
  */
 export async function redrawImageClean(
   png: Buffer,
-  opts: { prompt: string; label: string },
+  opts: ImageCleanOpts,
 ): Promise<ImageCleanResult> {
   const notes: string[] = [];
   const label = opts.label;
+
+  const cached = tryLoadCachedCleaned(opts.cachePath, label);
+  if (cached) return cached;
+
   const apiKey = resolveGeminiApiKey();
   if (!apiKey) {
     notes.push(
@@ -142,6 +199,7 @@ export async function redrawImageClean(
     notes.push(
       `${label} redraw ok → cleaned ${meta.width}×${meta.height} (orig ${prepared.origW}×${prepared.origH})`,
     );
+    persistCleanedCache(opts.cachePath, out, notes);
     return { cleanedPng: out, status: "ok", notes, model };
   } catch (e) {
     notes.push(
@@ -152,17 +210,25 @@ export async function redrawImageClean(
 }
 
 /** Walls/windows/doors-only redraw. */
-export async function redrawStructureClean(png: Buffer): Promise<ImageCleanResult> {
+export async function redrawStructureClean(
+  png: Buffer,
+  opts?: { cachePath?: string },
+): Promise<ImageCleanResult> {
   return redrawImageClean(png, {
     prompt: STRUCTURE_REDRAW_PROMPT,
     label: "Structure",
+    cachePath: opts?.cachePath,
   });
 }
 
 /** Dimensions/measurement-lines-only redraw. */
-export async function redrawDimsClean(png: Buffer): Promise<ImageCleanResult> {
+export async function redrawDimsClean(
+  png: Buffer,
+  opts?: { cachePath?: string },
+): Promise<ImageCleanResult> {
   return redrawImageClean(png, {
     prompt: DIMS_REDRAW_PROMPT,
     label: "Dims",
+    cachePath: opts?.cachePath,
   });
 }

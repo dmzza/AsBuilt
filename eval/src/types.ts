@@ -166,6 +166,12 @@ export interface ScorePlanPairInput {
   visionTiles?: boolean;
   /** Run id / output dir for artifact paths (set by CLI). */
   artifactDir?: string;
+  /**
+   * Durable case directory for cleaned redraw PNGs
+   * (e.g. eval/cases/<id>/cleaned/). When set, Nano Banana results are
+   * cached here and reused on later runs unless EVAL_FORCE_REDRAW=1.
+   */
+  cleanedCacheDir?: string;
 }
 
 export interface ScorePlanPairResult {
@@ -179,15 +185,15 @@ export interface ScorePlanPairResult {
   referenceStructure?: StructureReading;
   /** Wall junctions + spans on the candidate image (candidate pixel space). */
   candidateStructure?: StructureReading;
-  /** How structure redraw went for ref / cand (ok | fallback | skipped). */
+  /** How structure redraw went for ref / cand (ok | cached | fallback | skipped). */
   structureCleaned?: {
-    reference: "ok" | "fallback" | "skipped";
-    candidate: "ok" | "fallback" | "skipped";
+    reference: "ok" | "cached" | "fallback" | "skipped";
+    candidate: "ok" | "cached" | "fallback" | "skipped";
   };
-  /** How dims redraw went for ref / cand (ok | fallback | skipped). */
+  /** How dims redraw went for ref / cand (ok | cached | fallback | skipped). */
   dimsCleaned?: {
-    reference: "ok" | "fallback" | "skipped";
-    candidate: "ok" | "fallback" | "skipped";
+    reference: "ok" | "cached" | "fallback" | "skipped";
+    candidate: "ok" | "cached" | "fallback" | "skipped";
   };
   transform: SimilarityTransform;
   overlays: OverlayArtifacts;
