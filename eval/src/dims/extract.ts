@@ -1,6 +1,8 @@
 import sharp from "sharp";
 import { parseDimText } from "../image";
 import { createVisionClient, parseJsonBlock, type VisionClient } from "../vision/client";
+import { imageMeta, prepareVisionImage } from "../vision/prepare";
+import { scalePointFromResized } from "../vision/resize";
 import type { BBox, DimReading, DimSpan, Point } from "../types";
 
 const SYSTEM = `You are an expert architectural draftsperson reviewing floor-plan images
@@ -10,7 +12,8 @@ span it measures.
 Critical rules:
 - Separate WALL strokes from DIMENSION graphics (dim lines, extension lines, ticks, arrows).
 - For each dimension, return the numeric value AND the two endpoints of the measured span
-  in image pixel coordinates (origin top-left, x right, y down).
+  in absolute pixel coordinates (origin top-left, x right, y down) of THIS image as given
+  (width × height stated in the user message). Do not normalize coordinates.
 - Endpoints should land on the wall corners / faces being measured, NOT merely on the
   dimension string. Prefer extension-line intersections with the measured wall.
 - If wall-vs-dim-line is ambiguous, include alternateSpans with competing endpoint pairs.
@@ -39,11 +42,6 @@ interface ExtractPayload {
   dimensions: RawDim[];
 }
 
-async function imageMeta(buf: Buffer): Promise<{ width: number; height: number }> {
-  const m = await sharp(buf).metadata();
-  return { width: m.width ?? 0, height: m.height ?? 0 };
-}
-
 function clampPoint(p: Point, w: number, h: number): Point {
   return {
     x: Math.max(0, Math.min(w - 1, p.x)),
@@ -59,28 +57,83 @@ function clampBBox(b: BBox, w: number, h: number): BBox {
   return { x, y, w: w2, h: h2 };
 }
 
-function normalizeReading(raw: RawDim, idx: number, w: number, h: number): DimReading | null {
+function scaleSeg(
+  s: { a: Point; b: Point },
+  origW: number,
+  origH: number,
+  rw: number,
+  rh: number,
+): { a: Point; b: Point } {
+  return {
+    a: scalePointFromResized(s.a, origW, origH, rw, rh),
+    b: scalePointFromResized(s.b, origW, origH, rw, rh),
+  };
+}
+
+function normalizeReading(
+  raw: RawDim,
+  idx: number,
+  /** Space the model returned coords in (resized / sent image). */
+  visionW: number,
+  visionH: number,
+  /** Original image to map coords into. */
+  origW: number,
+  origH: number,
+): DimReading | null {
   const inches =
     raw.valueInches ??
     parseDimText(raw.valueText) ??
     (typeof raw.valueInches === "number" ? raw.valueInches : null);
   if (inches === null || !Number.isFinite(inches)) return null;
   if (!raw.span?.a || !raw.span?.b || !raw.labelBBox) return null;
-  const span: DimSpan = {
-    a: clampPoint(raw.span.a, w, h),
-    b: clampPoint(raw.span.b, w, h),
-  };
+
+  const toOrig = (p: Point) =>
+    clampPoint(scalePointFromResized(p, origW, origH, visionW, visionH), origW, origH);
+
+  const span: DimSpan = { a: toOrig(raw.span.a), b: toOrig(raw.span.b) };
+  const labelTL = toOrig({ x: raw.labelBBox.x, y: raw.labelBBox.y });
+  const labelBR = toOrig({
+    x: raw.labelBBox.x + raw.labelBBox.w,
+    y: raw.labelBBox.y + raw.labelBBox.h,
+  });
+  const labelBBox = clampBBox(
+    {
+      x: labelTL.x,
+      y: labelTL.y,
+      w: Math.max(1, labelBR.x - labelTL.x),
+      h: Math.max(1, labelBR.y - labelTL.y),
+    },
+    origW,
+    origH,
+  );
+
   const alt =
     raw.alternateSpans
-      ?.map((s) => ({ a: clampPoint(s.a, w, h), b: clampPoint(s.b, w, h) }))
+      ?.map((s) => ({ a: toOrig(s.a), b: toOrig(s.b) }))
       .filter((s) => Number.isFinite(s.a.x) && Number.isFinite(s.b.x)) ?? undefined;
+
+  let dimGraphics = raw.dimGraphics;
+  if (dimGraphics) {
+    dimGraphics = {
+      dimLine: dimGraphics.dimLine
+        ? scaleSeg(dimGraphics.dimLine, origW, origH, visionW, visionH)
+        : undefined,
+      extensionA: dimGraphics.extensionA
+        ? scaleSeg(dimGraphics.extensionA, origW, origH, visionW, visionH)
+        : undefined,
+      extensionB: dimGraphics.extensionB
+        ? scaleSeg(dimGraphics.extensionB, origW, origH, visionW, visionH)
+        : undefined,
+    };
+  }
+
   return {
     id: raw.id ?? `dim-${idx}`,
     valueInches: inches,
     valueText: raw.valueText,
-    labelBBox: clampBBox(raw.labelBBox, w, h),
+    labelBBox,
     span,
-    dimGraphics: raw.dimGraphics,
+    dimGraphics,
     confidence: raw.confidence,
     alternateSpans: alt && alt.length > 0 ? alt : undefined,
     verified: false,
@@ -91,16 +144,19 @@ async function extractPass(
   client: VisionClient,
   png: Buffer,
   passLabel: string,
-): Promise<DimReading[]> {
-  const { width, height } = await imageMeta(png);
+): Promise<{ readings: DimReading[]; resizeNote?: string }> {
+  const prepared = await prepareVisionImage(png, client.model);
+  const { send, mediaType, origW, origH, visionW, visionH, didResize } = prepared;
+
   const prompt = `Pass: ${passLabel}
-Image size: ${width} x ${height} pixels.
+Image size: ${visionW} x ${visionH} pixels.
 
 Find ALL written architectural dimensions on this floor plan.
+Return absolute pixel coordinates in this ${visionW}×${visionH} image (origin top-left).
 Return JSON only:
 {
-  "width": ${width},
-  "height": ${height},
+  "width": ${visionW},
+  "height": ${visionH},
   "dimensions": [
     {
       "id": "d1",
@@ -126,17 +182,20 @@ measured endpoints on the building geometry (wall corners/faces), not the text.`
   const text = await client.complete({
     system: SYSTEM,
     prompt,
-    images: [{ data: png, mediaType: "image/png" }],
+    images: [{ data: send, mediaType }],
     json: true,
   });
   const payload = parseJsonBlock<ExtractPayload>(text);
   const dims = payload.dimensions ?? [];
   const out: DimReading[] = [];
   dims.forEach((d, i) => {
-    const n = normalizeReading(d, i, width, height);
+    const n = normalizeReading(d, i, visionW, visionH, origW, origH);
     if (n) out.push(n);
   });
-  return out;
+  const resizeNote = didResize
+    ? `Pre-resized ${origW}×${origH} → ${visionW}×${visionH} (Claude ${client.model} tier); coords scaled back to original`
+    : undefined;
+  return { readings: out, resizeNote };
 }
 
 /** Crop tiles covering the image for a second-pass zoom extract. */
@@ -230,7 +289,9 @@ export async function extractDimensions(
 
   let full: DimReading[] = [];
   try {
-    full = await extractPass(client, png, "full-page");
+    const pass = await extractPass(client, png, "full-page");
+    full = pass.readings;
+    if (pass.resizeNote) notes.push(pass.resizeNote);
     notes.push(`Full-page pass found ${full.length} dimension(s)`);
   } catch (e) {
     notes.push(`Full-page extract failed: ${(e as Error).message}`);
@@ -244,17 +305,24 @@ export async function extractDimensions(
     for (let i = 0; i < use.length; i++) {
       const t = use[i]!;
       try {
-        const local = await extractPass(client, t.buf, `tile-${i} @(${t.ox},${t.oy})`);
-        tiled.push(...local.map((r) => offsetReading(r, t.ox, t.oy, `t${i}`)));
+        const pass = await extractPass(client, t.buf, `tile-${i} @(${t.ox},${t.oy})`);
+        tiled.push(...pass.readings.map((r) => offsetReading(r, t.ox, t.oy, `t${i}`)));
       } catch (e) {
         notes.push(`Tile ${i} extract failed: ${(e as Error).message}`);
       }
     }
     notes.push(`Tile passes contributed ${tiled.length} raw reading(s)`);
+  } else {
+    notes.push("Tiled zoom passes skipped (one-shot mode)");
   }
 
-  // Confirmation pass on low-confidence
+  // Confirmation pass on low-confidence (skipped in one-shot mode — still crops).
   const merged = mergeReadings([...full, ...tiled]);
+  if (opts?.tiles === false) {
+    notes.push(`One-shot merge kept ${merged.length} dimension(s); confirm crops skipped`);
+    return { readings: merged, notes };
+  }
+
   const uncertain = merged.filter((r) => (r.confidence ?? 0.5) < 0.65);
   for (const u of uncertain.slice(0, 8)) {
     try {
@@ -272,9 +340,9 @@ export async function extractDimensions(
         .extract({ left, top, width: widthC, height: heightC })
         .png()
         .toBuffer();
-      const confirmed = await extractPass(client, crop, `confirm-${u.id}`);
-      if (confirmed[0]) {
-        const c = offsetReading(confirmed[0], left, top, "c");
+      const pass = await extractPass(client, crop, `confirm-${u.id}`);
+      if (pass.readings[0]) {
+        const c = offsetReading(pass.readings[0], left, top, "c");
         u.valueInches = c.valueInches;
         u.valueText = c.valueText ?? u.valueText;
         u.span = c.span;

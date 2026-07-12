@@ -6,6 +6,7 @@ import {
   warpCandidateToReference,
 } from "./align";
 import { extractDimensions, visionTopologyFindings } from "./dims/extract";
+import { extractStructure } from "./structure/extract";
 import { matchDimensions } from "./dims/match";
 import { compareLayout } from "./layout";
 import { drawDimsOverlay } from "./overlay";
@@ -16,6 +17,7 @@ import type {
   ScoreAxes,
   ScorePlanPairInput,
   ScorePlanPairResult,
+  StructureReading,
 } from "./types";
 
 function asUsed(gold: DimGold[] | undefined, proposed: DimReading[]): DimReading[] {
@@ -50,17 +52,36 @@ export async function scorePlanPair(
 
   let proposedReferenceReadings: DimReading[] = [];
   let proposedCandidateReadings: DimReading[] = [];
+  let referenceStructure: StructureReading = { junctions: [], wallSpans: [] };
+  let candidateStructure: StructureReading = { junctions: [], wallSpans: [] };
 
   if (useVision) {
+    const extractOpts = { tiles: input.visionTiles !== false };
+    if (input.visionTiles === false) {
+      notes.push("Vision dim extract: one-shot full-page only (tiles disabled)");
+    }
+
+    // Structure layer (walls/junctions) — separate from dim annotations.
+    {
+      const sx = await extractStructure(input.reference);
+      referenceStructure = sx.structure;
+      notes.push(...sx.notes.map((n) => `ref-structure: ${n}`));
+    }
+    {
+      const sx = await extractStructure(input.candidate);
+      candidateStructure = sx.structure;
+      notes.push(...sx.notes.map((n) => `cand-structure: ${n}`));
+    }
+
     if (!input.referenceGold?.length) {
-      const ex = await extractDimensions(input.reference);
+      const ex = await extractDimensions(input.reference, extractOpts);
       proposedReferenceReadings = ex.readings;
       notes.push(...ex.notes.map((n) => `ref: ${n}`));
     } else {
       notes.push(`Using ${input.referenceGold.length} verified reference gold dim(s)`);
     }
     if (!input.candidateGold?.length) {
-      const ex = await extractDimensions(input.candidate);
+      const ex = await extractDimensions(input.candidate, extractOpts);
       proposedCandidateReadings = ex.readings;
       notes.push(...ex.notes.map((n) => `cand: ${n}`));
     } else {
@@ -171,6 +192,8 @@ export async function scorePlanPair(
           candidateDimsUsed,
           proposedReferenceReadings,
           proposedCandidateReadings,
+          referenceStructure,
+          candidateStructure,
           overlays,
         },
         null,
@@ -186,6 +209,8 @@ export async function scorePlanPair(
     proposedCandidateReadings,
     referenceDimsUsed,
     candidateDimsUsed,
+    referenceStructure,
+    candidateStructure,
     transform,
     overlays,
     notes,

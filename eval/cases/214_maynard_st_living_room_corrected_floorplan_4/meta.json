@@ -1,0 +1,9 @@
+{
+  "title": "214 Maynard — one-shot vision (no tiles)",
+  "visionTiles": false,
+  "tolerances": {
+    "dimInches": 0.5,
+    "spanPx": 48,
+    "layoutMismatch": 0.35
+  }
+}
