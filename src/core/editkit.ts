@@ -401,6 +401,17 @@ export function proposeDelete(project: Project, branch: string, key: string): Te
     }
   }
 
+  // If deleting a wall, also delete all openings hosted on it
+  if (eff?.stmt.kind === "wall") {
+    for (const [openingKey, openingEff] of pipeline.resolved.effective) {
+      if (openingEff.stmt.kind === "opening" && openingEff.stmt.wall === key) {
+        if (!targets.includes(openingKey)) {
+          targets.push(openingKey);
+        }
+      }
+    }
+  }
+
   const edits: TextEdit[] = [];
   const tombstones: string[] = [];
   for (const t of targets) {

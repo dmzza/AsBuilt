@@ -248,7 +248,7 @@ export const useApp = create<AppState>((set, get) => ({
   setBranch(branch) {
     const { project } = get();
     if (project === null) return;
-    set({ branch, selection: null, pendingStart: null, ...compute(project, branch) });
+    set({ branch, selection: null, pendingStart: null, measurePending: null, editor: null, ...compute(project, branch) });
     persist.autosave(project.files, branch);
   },
 
@@ -344,9 +344,11 @@ export const useApp = create<AppState>((set, get) => ({
     if (
       eff.stmt.kind !== "wall" &&
       eff.stmt.kind !== "junction" &&
-      eff.stmt.kind !== "meas"
+      eff.stmt.kind !== "meas" &&
+      eff.stmt.kind !== "opening" &&
+      eff.stmt.kind !== "fixture"
     ) {
-      get().showToast("Only walls, junctions, and measurements can be deleted", "info");
+      get().showToast("Only walls, junctions, measurements, openings, and fixtures can be deleted", "info");
       return;
     }
     try {
@@ -522,6 +524,8 @@ export const useApp = create<AppState>((set, get) => ({
         past: past.slice(0, -1),
         future: [...future, { files: Object.fromEntries(project.files), branch }],
         selection: null,
+        editor: null,
+        measurePending: null,
         dirty: markAllDirty(prev.files),
         ...compute(restored, prev.branch),
       });
@@ -543,6 +547,8 @@ export const useApp = create<AppState>((set, get) => ({
         future: future.slice(0, -1),
         past: [...past, { files: Object.fromEntries(project.files), branch }],
         selection: null,
+        editor: null,
+        measurePending: null,
         dirty: markAllDirty(next.files),
         ...compute(restored, next.branch),
       });

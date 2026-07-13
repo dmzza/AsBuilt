@@ -473,12 +473,14 @@ export function Plan2D(): JSX.Element {
         const moved = Math.hypot(wx - drag.wx, wy - drag.wy) > 0.01 ? { wx, wy } : drag;
         dragJunction(drag.key, { x: roundInch(moved.wx), y: roundInch(moved.wy) });
       } else if (drag.kind === "fixture") {
-        const moved = Math.hypot(wx - drag.wx, wy - drag.wy) > 0.01 ? { wx, wy } : drag;
-        moveFixture(drag.key, { x: roundInch(moved.wx), y: roundInch(moved.wy) });
+        const moved = Math.hypot(wx - drag.wx, wy - drag.wy);
+        if (moved > 1 / 64) {
+          moveFixture(drag.key, { x: roundInch(wx), y: roundInch(wy) });
+        }
       } else {
         const view = openings.find((o) => o.key === drag.key);
         const along = nearestWallAlong(geometry, view?.wall ?? "", wx, wy) ?? drag.centerAlong;
-        if (view !== undefined) {
+        if (view !== undefined && Math.abs(along - drag.centerAlong) > 1 / 64) {
           const off = openingOffsetFromCenter(view, along);
           if (off !== null) moveOpening(drag.key, off);
         }

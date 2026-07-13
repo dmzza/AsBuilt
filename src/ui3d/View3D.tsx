@@ -109,14 +109,16 @@ function buildScene(pipeline: Pipeline, group: THREE.Group, selection: string | 
 }
 
 function disposeGroup(group: THREE.Group): void {
+  const materials = new Set<THREE.Material>();
   for (const child of [...group.children]) {
     group.remove(child);
     if (child instanceof THREE.Mesh) {
       child.geometry.dispose();
       const mats = Array.isArray(child.material) ? child.material : [child.material];
-      for (const m of mats) m.dispose();
+      for (const m of mats) materials.add(m);
     }
   }
+  for (const m of materials) m.dispose();
 }
 
 export function View3D(): JSX.Element {
@@ -228,10 +230,12 @@ export function View3D(): JSX.Element {
   useEffect(() => {
     const state = sceneRef.current;
     if (state === null || pipeline === null) return;
+    const hadChildren = state.group.children.length > 0;
     disposeGroup(state.group);
     buildScene(pipeline, state.group, selection);
 
-    if (!state.fitted && state.group.children.length > 0) {
+    const hasChildren = state.group.children.length > 0;
+    if (hasChildren && (!state.fitted || !hadChildren)) {
       state.fitted = true;
       const box = new THREE.Box3().setFromObject(state.group);
       const center = box.getCenter(new THREE.Vector3());
