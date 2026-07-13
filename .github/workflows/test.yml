@@ -16,6 +16,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Need full history so we can walk each commit in the PR/push range.
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -24,6 +27,21 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Require tests with production src/ changes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          chmod +x scripts/check-src-tests.sh
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BASE="$PR_BASE"
+          else
+            BASE="$PUSH_BEFORE"
+          fi
+          scripts/check-src-tests.sh "$BASE" "$HEAD_SHA"
 
       - name: Run tests
         run: npm test

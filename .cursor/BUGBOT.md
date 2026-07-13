@@ -9,6 +9,8 @@ Every Bugbot Autofix (and any commit that resolves a Bugbot finding) must includ
 - The test must assert the fixed behavior directly — not merely that the suite still runs.
 - Run `npm test` and keep it green before proposing or pushing the autofix.
 
+**CI enforces this:** `scripts/check-src-tests.sh` (Test workflow) fails any commit that changes production `src/` without also adding or modifying a test in that same commit. Vitest must still pass.
+
 If an autofix changes production code under `src/` and the PR diff has no new or updated test covering that bug:
 
 - Add a blocking Bug titled "Autofix missing regression test"
