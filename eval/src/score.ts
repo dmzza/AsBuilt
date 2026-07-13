@@ -201,6 +201,25 @@ export async function scorePlanPair(
   if (dimsRefCleaned) overlays.dimsRefPng = "dims_ref.png";
   if (dimsCandCleaned) overlays.dimsCandPng = "dims_cand.png";
 
+  let structureCandAligned: Buffer | null = null;
+  let dimsCandAligned: Buffer | null = null;
+  if (structureCandCleaned) {
+    structureCandAligned = await warpCandidateToReference(
+      structureCandCleaned,
+      input.reference,
+      transform,
+    );
+    overlays.structureCandAlignedPng = "structure_cand_aligned.png";
+  }
+  if (dimsCandCleaned) {
+    dimsCandAligned = await warpCandidateToReference(
+      dimsCandCleaned,
+      input.reference,
+      transform,
+    );
+    overlays.dimsCandAlignedPng = "dims_cand_aligned.png";
+  }
+
   if (artifactDir) {
     mkdirSync(artifactDir, { recursive: true });
     writeFileSync(join(artifactDir, overlays.referencePng), input.reference);
@@ -214,11 +233,32 @@ export async function scorePlanPair(
     if (structureCandCleaned && overlays.structureCandPng) {
       writeFileSync(join(artifactDir, overlays.structureCandPng), structureCandCleaned);
     }
+    if (structureCandAligned && overlays.structureCandAlignedPng) {
+      writeFileSync(join(artifactDir, overlays.structureCandAlignedPng), structureCandAligned);
+    }
     if (dimsRefCleaned && overlays.dimsRefPng) {
       writeFileSync(join(artifactDir, overlays.dimsRefPng), dimsRefCleaned);
     }
     if (dimsCandCleaned && overlays.dimsCandPng) {
       writeFileSync(join(artifactDir, overlays.dimsCandPng), dimsCandCleaned);
+    }
+    if (dimsCandAligned && overlays.dimsCandAlignedPng) {
+      writeFileSync(join(artifactDir, overlays.dimsCandAlignedPng), dimsCandAligned);
+    }
+
+    if (input.cleanedCacheDir) {
+      if (structureCandAligned && overlays.structureCandAlignedPng) {
+        writeFileSync(
+          join(input.cleanedCacheDir, overlays.structureCandAlignedPng),
+          structureCandAligned,
+        );
+      }
+      if (dimsCandAligned && overlays.dimsCandAlignedPng) {
+        writeFileSync(
+          join(input.cleanedCacheDir, overlays.dimsCandAlignedPng),
+          dimsCandAligned,
+        );
+      }
     }
 
     // Dim overlay on onion skin in reference space (ref dims + aligned cand spans drawn via findings)
