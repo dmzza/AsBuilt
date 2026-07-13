@@ -172,6 +172,44 @@ describe("proposeAddWall", () => {
     expect(text).toMatch(/wall k\.south \{ from: k\.sw, to: k\.se/);
   });
 
+  test("T-join onto an existing stem splits it (does not delete the stem)", () => {
+    // First stem off k.south, then T-join mid-stem — the stem must become two
+    // stubs + mid, not vanish via unsplit-on-delete during proposeSplitWall.
+    let project = loadProject({ "asbuilt.abl": BASE });
+    const stem1 = proposeAddWall(project, "asbuilt", {
+      a: { onWall: "k.south", x: s64FromFeet(6), y: 0 },
+      b: { x: s64FromFeet(6), y: s64FromFeet(-8) },
+      wallType: "int_2x4",
+      axis: "v",
+    });
+    project = applyEdits(project, stem1.edits);
+    const stemName = stem1.wall;
+    expect(wallView(resolveAndSolve(layerMap(project), "asbuilt"), stemName)).not.toBeNull();
+
+    const stem2 = proposeAddWall(project, "asbuilt", {
+      a: { onWall: stemName, x: s64FromFeet(6), y: s64FromFeet(-4) },
+      b: { x: s64FromFeet(10), y: s64FromFeet(-4) },
+      wallType: "int_2x4",
+      axis: "h",
+    });
+    project = applyEdits(project, stem2.edits);
+    const p = resolveAndSolve(layerMap(project), "asbuilt");
+    expect(p.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    // Original south host still split
+    expect(wallView(p, "k.south")).not.toBeNull();
+    expect(wallView(p, "k.south.b")).not.toBeNull();
+    // First stem still present as stubs (name reused for one stub)
+    expect(wallView(p, stemName)).not.toBeNull();
+    expect(wallView(p, `${stemName}.b`) ?? wallView(p, `${stemName}.b1`)).toBeTruthy();
+    expect(junctionPos(p.solution, `${stemName}.j`) ?? junctionPos(p.solution, stem2.junctions[0]!)).toBeTruthy();
+    expect(wallView(p, stem2.wall)).not.toBeNull();
+    // Stem length still spans ~8'
+    const a = wallView(p, stemName)!.lengthInches;
+    const bName = wallView(p, `${stemName}.b`) ? `${stemName}.b` : `${stemName}.b1`;
+    const b = wallView(p, bName)!.lengthInches;
+    expect(a + b).toBeCloseTo(IN("8'"), 1);
+  });
+
   test("T-join then delete the mid host segment opens the expansion", () => {
     // Two T-joins on k.south at 4' and 8', with a U of walls south of them.
     // Then delete the middle host segment (k.south between the two mids) —
