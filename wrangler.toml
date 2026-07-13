@@ -1,0 +1,15 @@
+# Cloudflare Pages — linked via the Cloudflare GitHub integration.
+# Dashboard: https://dash.cloudflare.com → Workers & Pages → asbuilt
+#
+# Build settings (configure once in the dashboard if not auto-detected):
+#   Build command:   npm run build
+#   Build output:    dist
+#   Root directory:  /
+#   Node version:    22
+#
+# Production branch: main
+# Preview deployments: enabled for pull requests (default)
+
+name = "asbuilt"
+compatibility_date = "2026-07-12"
+pages_build_output_dir = "dist"
