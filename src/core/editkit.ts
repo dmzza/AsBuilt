@@ -207,6 +207,13 @@ function verifyWallMove(
   delta: { x: number; y: number },
 ): boolean {
   try {
+    // Get original positions before edits
+    const orig = resolveAndSolve(layerMap(project), branch);
+    const a0 = junctionPos(orig.solution, from);
+    const b0 = junctionPos(orig.solution, to);
+    if (a0 === null || b0 === null) return false;
+
+    // Apply edits and get new positions
     const next = applyEdits(project, edits);
     const p = resolveAndSolve(layerMap(next), branch);
     const a = junctionPos(p.solution, from);
@@ -214,7 +221,14 @@ function verifyWallMove(
     if (a === null || b === null) return false;
     const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
     if (Math.hypot(mid.x - targetMid.x, mid.y - targetMid.y) > VERIFY_TOL) return false;
-    // Length should be roughly preserved for a pure translate.
+
+    // Verify both endpoints moved by approximately the same translation delta.
+    const deltaA = { x: a.x - a0.x, y: a.y - a0.y };
+    const deltaB = { x: b.x - b0.x, y: b.y - b0.y };
+    const errA = Math.hypot(deltaA.x - delta.x, deltaA.y - delta.y);
+    const errB = Math.hypot(deltaB.x - delta.x, deltaB.y - delta.y);
+    if (errA > VERIFY_TOL || errB > VERIFY_TOL) return false;
+
     return true;
   } catch {
     return false;
@@ -792,6 +806,7 @@ function forceBreakPinJunction(
       ...eff.stmt,
       value: s64FromInches(newDist),
       date: today,
+      ref: undefined,
     };
     broke.push(key);
     if (eff.layer === branch && eff.expandedFrom === undefined) {
@@ -984,11 +999,12 @@ export function proposeMoveWall(
         ...(moveB.kind !== "refusal" ? (moveB.broke ?? []) : []),
       ];
       if (edits.length > 0) {
+        const verified = verifyWallMove(project, edits, branch, from, to, midT, deltaInches);
         return {
           kind: "wall-move",
           wall: wallName,
           edits,
-          verified: true,
+          verified,
           broke: broke.length > 0 ? [...new Set(broke)] : undefined,
         };
       }
