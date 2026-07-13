@@ -1120,7 +1120,11 @@ export function proposeSplitWall(
     axisEff?.stmt.kind === "axis" ? axisEff.stmt.orient : undefined;
 
   // 1) Remove host wall + whole-span bindings (length no longer applies to either stub).
-  const edits: TextEdit[] = [...proposeDelete(project, branch, wallName)];
+  //    Do not unsplit: this delete is a replace-with-stubs, and the host may itself be
+  //    a T-stem whose parent must stay split.
+  const edits: TextEdit[] = [
+    ...proposeDelete(project, branch, wallName, { unsplit: false }),
+  ];
 
   // 2) Mid junction + two stubs (+ axes if the host was axis-aligned).
   const lines: string[] = [];
@@ -1526,9 +1530,17 @@ function collinearPairAtT(
  * toward a new soft compromise ("delete should change nothing else").
  *
  * Deleting the stem of a T-join unsplits the host: the mid junction and two
- * collinear stubs merge back into one wall.
+ * collinear stubs merge back into one wall. Pass `{ unsplit: false }` when
+ * removing a wall only to replace it (e.g. proposeSplitWall) — otherwise a
+ * T-stem being split would wrongly unsplit its parent and vanish.
  */
-export function proposeDelete(project: Project, branch: string, key: string): TextEdit[] {
+export function proposeDelete(
+  project: Project,
+  branch: string,
+  key: string,
+  opts: { unsplit?: boolean } = {},
+): TextEdit[] {
+  const doUnsplit = opts.unsplit !== false;
   // Snapshot pose while the deleted element still constrains the model.
   const pipeline = resolveAndSolve(layerMap(project), branch);
   const resolved = pipeline.resolved;
@@ -1555,7 +1567,7 @@ export function proposeDelete(project: Project, branch: string, key: string): Te
   }
 
   // If deleting a wall, also delete all openings hosted on it — and unsplit
-  // any T-join mid where this wall is the stem.
+  // any T-join mid where this wall is the stem (unless caller opts out).
   const appendLines: string[] = [];
   if (eff?.stmt.kind === "wall") {
     for (const [openingKey, openingEff] of resolved.effective) {
@@ -1566,100 +1578,100 @@ export function proposeDelete(project: Project, branch: string, key: string): Te
       }
     }
 
-    for (const mid of [eff.stmt.from, eff.stmt.to]) {
-      const pair = collinearPairAtT(pipeline, mid, key);
-      if (pair === null) continue;
-      const eA = resolved.effective.get(pair.a);
-      const eB = resolved.effective.get(pair.b);
-      if (eA?.stmt.kind !== "wall" || eB?.stmt.kind !== "wall") continue;
-      const outerA = wallOtherEnd(eA.stmt, mid);
-      const outerB = wallOtherEnd(eB.stmt, mid);
-      const mergedName = preferMergedWallName(pair.a, pair.b);
-      const wallType = eA.stmt.wallType;
+    if (doUnsplit) {
+      for (const mid of [eff.stmt.from, eff.stmt.to]) {
+        const pair = collinearPairAtT(pipeline, mid, key);
+        if (pair === null) continue;
+        const eA = resolved.effective.get(pair.a);
+        const eB = resolved.effective.get(pair.b);
+        if (eA?.stmt.kind !== "wall" || eB?.stmt.kind !== "wall") continue;
+        const outerA = wallOtherEnd(eA.stmt, mid);
+        const outerB = wallOtherEnd(eB.stmt, mid);
+        const mergedName = preferMergedWallName(pair.a, pair.b);
+        const wallType = eA.stmt.wallType;
 
-      for (const stub of [pair.a, pair.b]) {
-        for (const k of [stub, `${stub}.length`, `${stub}.axis`]) {
-          if (resolved.effective.has(k) && !targets.includes(k)) targets.push(k);
-        }
-        for (const [openingKey, openingEff] of resolved.effective) {
-          if (openingEff.stmt.kind === "opening" && openingEff.stmt.wall === stub) {
-            if (!targets.includes(openingKey)) targets.push(openingKey);
+        for (const stub of [pair.a, pair.b]) {
+          for (const k of [stub, `${stub}.length`, `${stub}.axis`]) {
+            if (resolved.effective.has(k) && !targets.includes(k)) targets.push(k);
+          }
+          for (const [openingKey, openingEff] of resolved.effective) {
+            if (openingEff.stmt.kind === "opening" && openingEff.stmt.wall === stub) {
+              if (!targets.includes(openingKey)) targets.push(openingKey);
+            }
           }
         }
-      }
-      if (resolved.effective.has(mid) && !targets.includes(mid)) {
-        targets.push(mid);
-      }
-
-      // Rebuild openings on the merged wall (offset from outerA along the span).
-      const pa = pipelineJunction(pipeline, outerA);
-      for (const stub of [pair.a, pair.b]) {
-        const stubEff = resolved.effective.get(stub);
-        if (stubEff?.stmt.kind !== "wall") continue;
-        const stubFrom = stubEff.stmt.from;
-        const stubLenView = wallLengthInches(pipeline, stub);
-        for (const [, opEff] of resolved.effective) {
-          if (opEff.stmt.kind !== "opening" || opEff.stmt.wall !== stub) continue;
-          const op = opEff.stmt;
-          const offIn = evalExprOffset(op, pipeline) / 64;
-          const wIn = op.width / 64;
-          const fromAnchored = op.anchor === stubFrom;
-          const startFromStubFrom = fromAnchored ? offIn : stubLenView - offIn - wIn;
-          const stubFromPos = pipelineJunction(pipeline, stubFrom);
-          const stubFromAlong = Math.hypot(stubFromPos.x - pa.x, stubFromPos.y - pa.y);
-          // If the stub's `from` is the far end, walking along the stub increases
-          // distance from outerA only when stubFrom is nearer to outerA.
-          const stubTo = stubEff.stmt.to;
-          const stubToPos = pipelineJunction(pipeline, stubTo);
-          const stubToAlong = Math.hypot(stubToPos.x - pa.x, stubToPos.y - pa.y);
-          const alongIncreases = stubToAlong >= stubFromAlong;
-          const startAlong = alongIncreases
-            ? stubFromAlong + startFromStubFrom
-            : stubFromAlong - startFromStubFrom - wIn;
-          const clamped = Math.max(0, Math.round(startAlong));
-          appendLines.push(
-            printStmt({
-              ...op,
-              wall: mergedName,
-              anchor: outerA,
-              offset: {
-                terms: [{ sign: 1, kind: "lit", value: s64FromInches(clamped) }],
-              },
-            }),
-          );
+        if (resolved.effective.has(mid) && !targets.includes(mid)) {
+          targets.push(mid);
         }
-      }
 
-      appendLines.push(
-        printStmt({
-          kind: "wall",
-          name: mergedName,
-          from: outerA,
-          to: outerB,
-          wallType,
-          loc: { file: "", line: 0 },
-          leadingComments: [],
-        }),
-      );
-      const axisA = resolved.effective.get(`${pair.a}.axis`);
-      const axisB = resolved.effective.get(`${pair.b}.axis`);
-      const orient =
-        axisA?.stmt.kind === "axis"
-          ? axisA.stmt.orient
-          : axisB?.stmt.kind === "axis"
-            ? axisB.stmt.orient
-            : undefined;
-      if (orient !== undefined) {
+        // Rebuild openings on the merged wall (offset from outerA along the span).
+        const pa = pipelineJunction(pipeline, outerA);
+        for (const stub of [pair.a, pair.b]) {
+          const stubEff = resolved.effective.get(stub);
+          if (stubEff?.stmt.kind !== "wall") continue;
+          const stubFrom = stubEff.stmt.from;
+          const stubLenView = wallLengthInches(pipeline, stub);
+          for (const [, opEff] of resolved.effective) {
+            if (opEff.stmt.kind !== "opening" || opEff.stmt.wall !== stub) continue;
+            const op = opEff.stmt;
+            const offIn = evalExprOffset(op, pipeline) / 64;
+            const wIn = op.width / 64;
+            const fromAnchored = op.anchor === stubFrom;
+            const startFromStubFrom = fromAnchored ? offIn : stubLenView - offIn - wIn;
+            const stubFromPos = pipelineJunction(pipeline, stubFrom);
+            const stubFromAlong = Math.hypot(stubFromPos.x - pa.x, stubFromPos.y - pa.y);
+            const stubTo = stubEff.stmt.to;
+            const stubToPos = pipelineJunction(pipeline, stubTo);
+            const stubToAlong = Math.hypot(stubToPos.x - pa.x, stubToPos.y - pa.y);
+            const alongIncreases = stubToAlong >= stubFromAlong;
+            const startAlong = alongIncreases
+              ? stubFromAlong + startFromStubFrom
+              : stubFromAlong - startFromStubFrom - wIn;
+            const clamped = Math.max(0, Math.round(startAlong));
+            appendLines.push(
+              printStmt({
+                ...op,
+                wall: mergedName,
+                anchor: outerA,
+                offset: {
+                  terms: [{ sign: 1, kind: "lit", value: s64FromInches(clamped) }],
+                },
+              }),
+            );
+          }
+        }
+
         appendLines.push(
           printStmt({
-            kind: "axis",
-            name: `${mergedName}.axis`,
-            wall: mergedName,
-            orient,
+            kind: "wall",
+            name: mergedName,
+            from: outerA,
+            to: outerB,
+            wallType,
             loc: { file: "", line: 0 },
             leadingComments: [],
           }),
         );
+        const axisA = resolved.effective.get(`${pair.a}.axis`);
+        const axisB = resolved.effective.get(`${pair.b}.axis`);
+        const orient =
+          axisA?.stmt.kind === "axis"
+            ? axisA.stmt.orient
+            : axisB?.stmt.kind === "axis"
+              ? axisB.stmt.orient
+              : undefined;
+        if (orient !== undefined) {
+          appendLines.push(
+            printStmt({
+              kind: "axis",
+              name: `${mergedName}.axis`,
+              wall: mergedName,
+              orient,
+              loc: { file: "", line: 0 },
+              leadingComments: [],
+            }),
+          );
+        }
       }
     }
   }
