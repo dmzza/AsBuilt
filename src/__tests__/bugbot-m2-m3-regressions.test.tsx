@@ -138,7 +138,7 @@ describe("Bugbot M2–M3 regressions", () => {
 
     const before = useApp.getState().project!.files.get("asbuilt.abl")!;
     const pastBefore = useApp.getState().past.length;
-    const svg = container.querySelector("svg");
+    const svg = container.querySelector("svg.plan");
     const fridge = container.querySelector('[data-key="fridge"]');
     const win = container.querySelector('[data-key="win1"]');
     expect(svg && fridge && win).toBeTruthy();

@@ -181,7 +181,7 @@ describe("app smoke (jsdom)", () => {
     const before = useApp.getState().project!.files.get("asbuilt.abl")!;
     expect(before).toMatch(/fixture fridge \{[^}]*at: ~\(26'-0", 8'-0"\)/);
 
-    const svg = container.querySelector("svg");
+    const svg = container.querySelector("svg.plan");
     const g = container.querySelector('[data-key="fridge"]');
     expect(svg).not.toBeNull();
     expect(g).not.toBeNull();
@@ -246,7 +246,7 @@ describe("app smoke (jsdom)", () => {
     const before = useApp.getState().project!.files.get("asbuilt.abl")!;
     expect(before).toContain(`window win1 { in: dl.north, at: 4'-0" from dl.nw`);
 
-    const svg = container.querySelector("svg");
+    const svg = container.querySelector("svg.plan");
     const g = container.querySelector('[data-key="win1"]');
     expect(svg).not.toBeNull();
     expect(g).not.toBeNull();
