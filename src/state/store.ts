@@ -74,6 +74,8 @@ interface AppState {
   past: Snapshot[];
   future: Snapshot[];
   toast: { message: string; kind: "info" | "error"; at: number } | null;
+  /** Bumped on demo load / folder open so 2D/3D views know to refit the camera. */
+  sceneEpoch: number;
 
   boot(): void;
   loadDemo(): void;
@@ -148,6 +150,7 @@ export const useApp = create<AppState>((set, get) => ({
   past: [],
   future: [],
   toast: null,
+  sceneEpoch: 0,
 
   boot() {
     const saved = persist.restore();
@@ -188,6 +191,7 @@ export const useApp = create<AppState>((set, get) => ({
       past: [],
       future: [],
       wallType: firstWallType(project),
+      sceneEpoch: get().sceneEpoch + 1,
       ...compute(project, DEMO_BRANCH),
     });
     persist.autosave(project.files, DEMO_BRANCH);
@@ -216,6 +220,7 @@ export const useApp = create<AppState>((set, get) => ({
         past: [],
         future: [],
         wallType: firstWallType(project),
+        sceneEpoch: get().sceneEpoch + 1,
         ...compute(project, branch),
       });
       persist.autosave(project.files, branch);

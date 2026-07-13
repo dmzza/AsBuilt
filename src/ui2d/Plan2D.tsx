@@ -35,12 +35,21 @@ interface View {
 }
 
 type DragState =
-  | { kind: "junction"; key: string; wx: number; wy: number }
-  | { kind: "opening"; key: string; centerAlong: number }
-  | { kind: "fixture"; key: string; wx: number; wy: number };
+  | { kind: "junction"; key: string; wx: number; wy: number; downWx: number; downWy: number }
+  | {
+      kind: "opening";
+      key: string;
+      centerAlong: number;
+      originAlong: number;
+      downWx: number;
+      downWy: number;
+    }
+  | { kind: "fixture"; key: string; wx: number; wy: number; downWx: number; downWy: number };
 
 const JUNCTION_SNAP_PX = 12;
 const GRID_INCH = 1; // drawing rounds to whole inches
+/** Ignore pointer travel below this (inches) so click-to-select doesn't move geometry. */
+const CLICK_SLOP_IN = 2 / 16;
 
 function roundInch(v: number): S64 {
   return s64FromInches(Math.round(v));
@@ -48,7 +57,7 @@ function roundInch(v: number): S64 {
 
 export function Plan2D(): JSX.Element {
   const pipeline = useApp((s) => s.pipeline);
-  const project = useApp((s) => s.project);
+  const sceneEpoch = useApp((s) => s.sceneEpoch);
   const tool = useApp((s) => s.tool);
   const selection = useApp((s) => s.selection);
   const pendingStart = useApp((s) => s.pendingStart);
@@ -73,17 +82,15 @@ export function Plan2D(): JSX.Element {
   const [pan, setPan] = useState<{ px: number; py: number } | null>(null);
   const [cursor, setCursor] = useState<{ wx: number; wy: number } | null>(null);
   const fitted = useRef(false);
-  const layerNamesRef = useRef<string>("");
+  const fittedEpoch = useRef(-1);
 
-  // --- reset fit when project changes (demo load, folder open)
+  // --- reset fit when demo loads / folder opens
   useEffect(() => {
-    if (project === null) return;
-    const layersKey = [...project.layers.keys()].sort().join("|");
-    if (layersKey !== layerNamesRef.current && layerNamesRef.current !== "") {
+    if (sceneEpoch !== fittedEpoch.current) {
       fitted.current = false;
+      fittedEpoch.current = sceneEpoch;
     }
-    layerNamesRef.current = layersKey;
-  }, [project]);
+  }, [sceneEpoch]);
 
   // --- size tracking
   useEffect(() => {
@@ -469,20 +476,21 @@ export function Plan2D(): JSX.Element {
       // reach pointerup without any intermediate pointermove events.
       const rect = e.currentTarget.getBoundingClientRect();
       const { wx, wy } = toWorld(e.clientX - rect.left, e.clientY - rect.top);
-      if (drag.kind === "junction") {
-        const moved = Math.hypot(wx - drag.wx, wy - drag.wy) > 0.01 ? { wx, wy } : drag;
-        dragJunction(drag.key, { x: roundInch(moved.wx), y: roundInch(moved.wy) });
-      } else if (drag.kind === "fixture") {
-        const moved = Math.hypot(wx - drag.wx, wy - drag.wy);
-        if (moved > 1 / 64) {
+      const pointerTravel = Math.hypot(wx - drag.downWx, wy - drag.downWy);
+      // Click-to-select: pointerdown already selected; don't treat click offset
+      // from the object center as a move (that was yanking openings/fixtures).
+      if (pointerTravel > CLICK_SLOP_IN) {
+        if (drag.kind === "junction") {
+          dragJunction(drag.key, { x: roundInch(wx), y: roundInch(wy) });
+        } else if (drag.kind === "fixture") {
           moveFixture(drag.key, { x: roundInch(wx), y: roundInch(wy) });
-        }
-      } else {
-        const view = openings.find((o) => o.key === drag.key);
-        const along = nearestWallAlong(geometry, view?.wall ?? "", wx, wy) ?? drag.centerAlong;
-        if (view !== undefined && Math.abs(along - drag.centerAlong) > 1 / 64) {
-          const off = openingOffsetFromCenter(view, along);
-          if (off !== null) moveOpening(drag.key, off);
+        } else {
+          const view = openings.find((o) => o.key === drag.key);
+          const along = nearestWallAlong(geometry, view?.wall ?? "", wx, wy) ?? drag.centerAlong;
+          if (view !== undefined && Math.abs(along - drag.originAlong) > 1 / 64) {
+            const off = openingOffsetFromCenter(view, along);
+            if (off !== null) moveOpening(drag.key, off);
+          }
         }
       }
       setDrag(null);
@@ -495,7 +503,10 @@ export function Plan2D(): JSX.Element {
     e.stopPropagation();
     select(key);
     const p = geometry?.junctions.find((j) => j.key === key);
-    if (p !== undefined) setDrag({ kind: "junction", key, wx: p.x, wy: p.y });
+    if (p === undefined || svgRef.current === null) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const { wx, wy } = toWorld(e.clientX - rect.left, e.clientY - rect.top);
+    setDrag({ kind: "junction", key, wx: p.x, wy: p.y, downWx: wx, downWy: wy });
   };
 
   const startOpeningDrag = (key: string, e: ReactPointerEvent): void => {
@@ -503,13 +514,22 @@ export function Plan2D(): JSX.Element {
     e.stopPropagation();
     select(key);
     const view = openings.find((o) => o.key === key);
-    if (view === undefined || geometry === null) return;
+    if (view === undefined || geometry === null || svgRef.current === null) return;
     const w = geometry.walls.find((g) => g.key === view.wall);
     if (w === undefined) return;
     const midX = (view.jambA.x + view.jambB.x) / 2;
     const midY = (view.jambA.y + view.jambB.y) / 2;
     const along = Math.hypot(midX - w.a.x, midY - w.a.y);
-    setDrag({ kind: "opening", key, centerAlong: along });
+    const rect = svgRef.current.getBoundingClientRect();
+    const { wx, wy } = toWorld(e.clientX - rect.left, e.clientY - rect.top);
+    setDrag({
+      kind: "opening",
+      key,
+      centerAlong: along,
+      originAlong: along,
+      downWx: wx,
+      downWy: wy,
+    });
   };
 
   const startFixtureDrag = (key: string, e: ReactPointerEvent): void => {
@@ -517,7 +537,10 @@ export function Plan2D(): JSX.Element {
     e.stopPropagation();
     select(key);
     const f = fixtures.find((v) => v.key === key);
-    if (f !== undefined) setDrag({ kind: "fixture", key, wx: f.x, wy: f.y });
+    if (f === undefined || svgRef.current === null) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const { wx, wy } = toWorld(e.clientX - rect.left, e.clientY - rect.top);
+    setDrag({ kind: "fixture", key, wx: f.x, wy: f.y, downWx: wx, downWy: wy });
   };
 
   // --- grid lines
