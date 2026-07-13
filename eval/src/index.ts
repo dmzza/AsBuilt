@@ -9,7 +9,7 @@ export {
   loadReviews,
   saveReviews,
 } from "./gold";
-export { writeReviewReport } from "./report";
+export { writeReviewReport, writeExtractReport } from "./report";
 export { createVisionClient, DEFAULT_GEMINI_VISION_MODEL } from "./vision/client";
 export { deriveVisionStatus, visionStatusTone } from "./vision/status";
 export {
@@ -35,6 +35,13 @@ export {
   type StructureCleanStatus,
 } from "./structure/redraw";
 export { matchDimensions } from "./dims/match";
+export { drawDimsOverlay, drawStructureOverlay } from "./overlay";
+export {
+  extractReferenceCase,
+  resolveExtractCaseDir,
+  type ExtractCaseOpts,
+  type ExtractCaseResult,
+} from "./extractCase";
 export {
   casesRoot,
   listCaseDirs,

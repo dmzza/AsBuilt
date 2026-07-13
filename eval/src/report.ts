@@ -10,8 +10,30 @@
  */
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ScorePlanPairResult, VisionStatus } from "./types";
+import type {
+  DimReading,
+  ScorePlanPairResult,
+  StructureReading,
+  VisionStatus,
+} from "./types";
 import { deriveVisionStatus, visionStatusTone } from "./vision/status";
+
+export interface ExtractReportInput {
+  caseId: string;
+  notes: string[];
+  visionStatus: VisionStatus;
+  structure: StructureReading;
+  dimensions: DimReading[];
+  structureCleaned: string;
+  dimsCleaned: string;
+  overlays: {
+    referencePng: string;
+    structureRefPng?: string;
+    dimsRefPng?: string;
+    structureOverlayPng?: string;
+    dimsOverlayPng?: string;
+  };
+}
 
 function esc(s: string): string {
   return s
@@ -1250,6 +1272,147 @@ renderInspector();
 applyView();
 applyBlend();
 if (bgRef.complete && bgRef.naturalWidth) onBgReady();
+</script>
+</body>
+</html>`;
+
+  writeFileSync(path, html);
+  return path;
+}
+
+/**
+ * Minimal single-image review for authoring prep (no candidate / no score).
+ * Views: Original / Structure / Dimensions, with detection overlays.
+ */
+export function writeExtractReport(
+  outDir: string,
+  input: ExtractReportInput,
+): string {
+  const path = join(outDir, "review.html");
+  const title = `Authoring extract — ${input.caseId}`;
+  const vs = input.visionStatus;
+  const tone = visionStatusTone(vs.availability);
+  const o = input.overlays;
+  const structureSrc = o.structureOverlayPng || o.structureRefPng || o.referencePng;
+  const dimsSrc = o.dimsOverlayPng || o.dimsRefPng || o.referencePng;
+  const structureCleanSrc = o.structureRefPng || o.referencePng;
+  const dimsCleanSrc = o.dimsRefPng || o.referencePng;
+
+  const dimRows = input.dimensions
+    .map(
+      (d) =>
+        `<tr><td>${esc(d.id)}</td><td>${esc(d.valueText ?? String(d.valueInches))}</td><td>${d.valueInches.toFixed(2)}</td><td>${(d.confidence ?? 0).toFixed(2)}</td></tr>`,
+    )
+    .join("\n");
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>${esc(title)}</title>
+<style>
+  :root {
+    --bg: #141311; --panel: #1c1b18; --line: #333029; --text: #f0eee6;
+    --muted: #8a8678; --accent: #6b9fff; --ok: #3ecf8e; --warn: #e2a350; --bad: #e86a5c;
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); min-height: 100vh; }
+  header {
+    display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+    padding: 0.65rem 1rem; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  h1 { font-size: 0.95rem; font-weight: 600; margin: 0; letter-spacing: 0.04em; text-transform: uppercase; }
+  .counts { display: flex; gap: 1rem; font-size: 0.8rem; color: var(--muted); }
+  .counts b { color: var(--accent); }
+  .ai-pill { font-size: 0.7rem; padding: 0.15rem 0.45rem; border-radius: 999px; border: 1px solid var(--line); }
+  .ai-pill-ok { color: var(--ok); border-color: #2a5a40; }
+  .ai-pill-warn { color: var(--warn); border-color: #5a4020; }
+  .ai-pill-bad { color: var(--bad); border-color: #5a2a28; }
+  .controls {
+    display: flex; gap: 0.5rem; flex-wrap: wrap; padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--line); background: #181714;
+  }
+  .controls button {
+    background: #2a2824; color: var(--text); border: 1px solid #444038;
+    padding: 0.35rem 0.75rem; border-radius: 4px; cursor: pointer; font-size: 0.8rem;
+  }
+  .controls button.active { background: #2f3f66; border-color: var(--accent); }
+  main { display: grid; grid-template-columns: 1fr 22rem; gap: 0; min-height: calc(100vh - 6rem); }
+  .stage { padding: 1rem; overflow: auto; display: flex; justify-content: center; align-items: flex-start; }
+  .stage img { max-width: 100%; height: auto; background: #fff; border: 1px solid var(--line); }
+  aside { border-left: 1px solid var(--line); background: var(--panel); padding: 1rem; overflow: auto; }
+  aside h2 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 0.6rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.75rem; margin-bottom: 1.2rem; }
+  th, td { text-align: left; padding: 0.25rem 0.3rem; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; }
+  pre {
+    white-space: pre-wrap; font-size: 0.7rem; color: var(--muted);
+    background: #12110f; padding: 0.6rem; border-radius: 4px; border: 1px solid var(--line);
+    max-height: 14rem; overflow: auto;
+  }
+  .hint { font-size: 0.75rem; color: var(--muted); line-height: 1.45; margin-bottom: 1rem; }
+  code { font-size: 0.72rem; color: #c8d8ff; }
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; }
+    aside { border-left: none; border-top: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>${esc(title)}</h1>
+  <div class="counts">
+    <span>junctions <b>${input.structure.junctions.length}</b></span>
+    <span>walls <b>${input.structure.wallSpans.length}</b></span>
+    <span>dims <b>${input.dimensions.length}</b></span>
+    <span>structure clean <b>${esc(input.structureCleaned)}</b></span>
+    <span>dims clean <b>${esc(input.dimsCleaned)}</b></span>
+  </div>
+  <span class="ai-pill ai-pill-${tone}" title="${esc(vs.summary)}">${esc(vs.label)}</span>
+</header>
+<div class="controls">
+  <button type="button" data-view="original" class="active">Original</button>
+  <button type="button" data-view="structure">Structure</button>
+  <button type="button" data-view="structure-clean">Structure clean</button>
+  <button type="button" data-view="dims">Dimensions</button>
+  <button type="button" data-view="dims-clean">Dims clean</button>
+</div>
+<main>
+  <div class="stage"><img id="view" src="${esc(o.referencePng)}" alt="extract view"/></div>
+  <aside>
+    <p class="hint">
+      Authoring prep (no candidate). Use cleaned rasters to separate walls from dimension ink,
+      then map <code>extract/structure_ref.json</code> and <code>extract/dims_ref.json</code> into <code>.abl</code>.
+      Score later with <code>npm run eval -- eval/cases/${esc(input.caseId)}</code>.
+    </p>
+    <h2>Dimensions</h2>
+    <table>
+      <thead><tr><th>id</th><th>text</th><th>in</th><th>conf</th></tr></thead>
+      <tbody>
+        ${dimRows || '<tr><td colspan="4">None</td></tr>'}
+      </tbody>
+    </table>
+    <h2>Notes</h2>
+    <pre id="notes">${esc(input.notes.join("\n"))}</pre>
+  </aside>
+</main>
+<script>
+const views = {
+  original: ${JSON.stringify(o.referencePng)},
+  structure: ${JSON.stringify(structureSrc)},
+  "structure-clean": ${JSON.stringify(structureCleanSrc)},
+  dims: ${JSON.stringify(dimsSrc)},
+  "dims-clean": ${JSON.stringify(dimsCleanSrc)},
+};
+const img = document.getElementById('view');
+for (const btn of document.querySelectorAll('[data-view]')) {
+  btn.addEventListener('click', () => {
+    for (const b of document.querySelectorAll('[data-view]')) b.classList.remove('active');
+    btn.classList.add('active');
+    img.src = views[btn.getAttribute('data-view')];
+  });
+}
 </script>
 </body>
 </html>`;
