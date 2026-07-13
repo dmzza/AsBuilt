@@ -148,6 +148,30 @@ describe("proposeAddWall", () => {
     expect(a + b).toBeCloseTo(IN("12'"), 1);
   });
 
+  test("T-join then delete the stem unsplits the host wall", () => {
+    const project0 = loadProject({ "asbuilt.abl": BASE });
+    const add = proposeAddWall(project0, "asbuilt", {
+      a: { onWall: "k.south", x: s64FromFeet(6), y: 0 },
+      b: { x: s64FromFeet(6), y: s64FromFeet(-4) },
+      wallType: "int_2x4",
+      axis: "v",
+    });
+    const split = applyEdits(project0, add.edits);
+    expect(wallView(resolveAndSolve(layerMap(split), "asbuilt"), "k.south.b")).not.toBeNull();
+
+    const next = applyEdits(split, proposeDelete(split, "asbuilt", add.wall));
+    const text = next.files.get("asbuilt.abl")!;
+    const p = resolveAndSolve(layerMap(next), "asbuilt");
+    expect(p.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    // Mid junction and eastern stub are gone; host is one wall again.
+    expect(junctionPos(p.solution, "k.south.j")).toBeNull();
+    expect(wallView(p, "k.south.b")).toBeNull();
+    expect(wallView(p, "k.south")).not.toBeNull();
+    expect(wallView(p, "k.south")!.lengthInches).toBeCloseTo(IN("12'"), 1);
+    expect(wallView(p, add.wall)).toBeNull();
+    expect(text).toMatch(/wall k\.south \{ from: k\.sw, to: k\.se/);
+  });
+
   test("T-join then delete the mid host segment opens the expansion", () => {
     // Two T-joins on k.south at 4' and 8', with a U of walls south of them.
     // Then delete the middle host segment (k.south between the two mids) —
