@@ -6,7 +6,7 @@
 #   scripts/check-src-tests.sh <base-sha> <head-sha>
 #
 # Production: anything under src/ that is not a test file.
-# Tests: *.test.ts(x), *.spec.ts(x), or any path under __tests__/.
+# Tests: *.test.ts(x) under src/ (matching Vitest include patterns).
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
@@ -23,8 +23,8 @@ if [[ "$BASE" =~ ^0+$ ]]; then
 fi
 
 if ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
-  echo "check-src-tests: base '$BASE' not found; skipping."
-  exit 0
+  echo "check-src-tests: base '$BASE' not found" >&2
+  exit 1
 fi
 
 if ! git cat-file -e "${HEAD}^{commit}" 2>/dev/null; then
@@ -35,10 +35,7 @@ fi
 is_test_path() {
   local f="$1"
   case "$f" in
-    *.test.ts|*.test.tsx|*.spec.ts|*.spec.tsx) return 0 ;;
-  esac
-  case "$f" in
-    */__tests__/*|__tests__/*) return 0 ;;
+    src/*.test.ts|src/*.test.tsx) return 0 ;;
   esac
   return 1
 }
@@ -93,7 +90,7 @@ for commit in $commits; do
       [[ -z "$f" ]] && continue
       echo "    src:  $f"
     done
-    echo "  Add or modify a test in this commit (*.test.ts(x) / *.spec.ts(x) / __tests__/)."
+    echo "  Add or modify a test in this commit (src/**/*.test.ts or src/**/*.test.tsx)."
     echo
   fi
 done
