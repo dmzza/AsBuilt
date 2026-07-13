@@ -332,6 +332,10 @@ export const useApp = create<AppState>((set, get) => ({
   setBranch(branch) {
     const { project } = get();
     if (project === null) return;
+    if (previewTimer !== undefined) {
+      clearTimeout(previewTimer);
+      previewTimer = undefined;
+    }
     set({
       branch,
       selection: null,
@@ -340,6 +344,7 @@ export const useApp = create<AppState>((set, get) => ({
       editor: null,
       preview: null,
       highlight: [],
+      level: null,
       ...compute(project, branch),
     });
     persist.autosave(project.files, branch);
@@ -447,6 +452,10 @@ export const useApp = create<AppState>((set, get) => ({
     const { project, branch, dirty, past } = get();
     if (project === null || edits.length === 0) return;
     try {
+      if (previewTimer !== undefined) {
+        clearTimeout(previewTimer);
+        previewTimer = undefined;
+      }
       const snapshot: Snapshot = { files: Object.fromEntries(project.files), branch };
       const next = applyEdits(project, edits);
       const touched: Record<string, true> = { ...dirty };
@@ -581,7 +590,7 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   setLevel(ns) {
-    set({ level: ns, selection: null, pendingStart: null, measurePending: null });
+    set({ level: ns, selection: null, pendingStart: null, measurePending: null, preview: null, highlight: [] });
   },
 
   placeOpening(wall, centerAlongInches) {
@@ -682,6 +691,10 @@ export const useApp = create<AppState>((set, get) => ({
     const prev = past[past.length - 1];
     if (prev === undefined || project === null) return;
     try {
+      if (previewTimer !== undefined) {
+        clearTimeout(previewTimer);
+        previewTimer = undefined;
+      }
       const restored = loadProject(prev.files);
       set({
         project: restored,
@@ -707,6 +720,10 @@ export const useApp = create<AppState>((set, get) => ({
     const next = future[future.length - 1];
     if (next === undefined || project === null) return;
     try {
+      if (previewTimer !== undefined) {
+        clearTimeout(previewTimer);
+        previewTimer = undefined;
+      }
       const restored = loadProject(next.files);
       set({
         project: restored,
