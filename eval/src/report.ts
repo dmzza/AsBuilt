@@ -508,11 +508,12 @@ function applyCandBgLayout() {
   if (!nw || !nh) return;
   const z = state.zoom;
   const t = state.transform;
-  bgCand.style.width = \`\${nw * z}px\`;
-  bgCand.style.height = \`\${nh * z}px\`;
+  // Bake align scale into layout size; overlays use applyTransform for coords.
+  bgCand.style.width = \`\${nw * t.scale * z}px\`;
+  bgCand.style.height = \`\${nh * t.scale * z}px\`;
   bgCand.style.transformOrigin = '0 0';
   const deg = (t.rotation * 180) / Math.PI;
-  bgCand.style.transform = \`translate(\${t.tx * z}px, \${t.ty * z}px) rotate(\${deg}deg) scale(\${t.scale})\`;
+  bgCand.style.transform = \`translate(\${t.tx * z}px, \${t.ty * z}px) rotate(\${deg}deg)\`;
 }
 
 const bgRef = document.getElementById('bg-ref');
