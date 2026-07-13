@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "build:pages": "vite build",
+    "build:pages": "vite-node scripts/prepare-eval-preview.ts && vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -17,7 +17,8 @@
     "eval:review": "vite-node scripts/eval-review.ts",
     "eval:regen-review": "vite-node scripts/regen-review-aligned.ts",
     "eval:seed": "vite-node scripts/seed-eval-demo.ts",
-    "eval:ui": "vite-node scripts/eval-ui.ts"
+    "eval:ui": "vite-node scripts/eval-ui.ts",
+    "eval:prepare-preview": "vite-node scripts/prepare-eval-preview.ts"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.1",
