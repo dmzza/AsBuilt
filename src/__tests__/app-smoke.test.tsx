@@ -295,4 +295,35 @@ describe("app smoke (jsdom)", () => {
     expect(useApp.getState().sceneEpoch).toBe(epoch0 + 2);
     expect(container.querySelector("svg.plan")).not.toBeNull();
   });
+
+  test("Demo in split view keeps exactly one 2D and one 3D pane", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+    await act(async () => {
+      useApp.getState().setViewMode("split");
+      useApp.getState().loadDemo();
+    });
+
+    expect(container.querySelectorAll(".plan-wrap")).toHaveLength(1);
+    expect(container.querySelectorAll(".view3d")).toHaveLength(1);
+    expect(container.querySelectorAll("svg.plan")).toHaveLength(1);
+
+    // Each Demo bump must remount without duplicating panes (duplicate sibling
+    // keys on Plan2D/View3D previously left extra 2D views in split mode).
+    await act(async () => {
+      useApp.getState().loadDemo();
+    });
+    expect(container.querySelectorAll(".plan-wrap")).toHaveLength(1);
+    expect(container.querySelectorAll(".view3d")).toHaveLength(1);
+    expect(container.querySelectorAll("svg.plan")).toHaveLength(1);
+
+    await act(async () => {
+      useApp.getState().loadDemo();
+    });
+    expect(container.querySelectorAll(".plan-wrap")).toHaveLength(1);
+    expect(container.querySelectorAll(".view3d")).toHaveLength(1);
+    expect(container.querySelectorAll("svg.plan")).toHaveLength(1);
+  });
 });
