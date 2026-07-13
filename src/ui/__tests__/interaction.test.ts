@@ -1,23 +1,27 @@
 import { describe, expect, test } from "vitest";
 import {
   CLICK_PX,
+  hasArmedDrag,
   isClickGesture,
   pointerTravelPx,
   shouldRefitForEpoch,
 } from "../interaction";
 
-describe("isClickGesture", () => {
-  test("identical down/up is a click", () => {
+describe("isClickGesture / hasArmedDrag", () => {
+  test("identical down/up is a click (not armed)", () => {
     expect(isClickGesture({ x: 100, y: 50 }, { x: 100, y: 50 })).toBe(true);
+    expect(hasArmedDrag({ x: 100, y: 50 }, { x: 100, y: 50 })).toBe(false);
   });
 
-  test("sub-threshold jitter is still a click", () => {
+  test("trackpad-scale jitter (≤12px) stays a click", () => {
     expect(isClickGesture({ x: 100, y: 50 }, { x: 100 + CLICK_PX, y: 50 })).toBe(true);
-    expect(isClickGesture({ x: 100, y: 50 }, { x: 103, y: 52 })).toBe(true);
+    expect(isClickGesture({ x: 100, y: 50 }, { x: 108, y: 55 })).toBe(true);
+    expect(hasArmedDrag({ x: 100, y: 50 }, { x: 108, y: 55 })).toBe(false);
   });
 
-  test("travel beyond threshold is a drag", () => {
+  test("travel beyond threshold arms a drag", () => {
     expect(isClickGesture({ x: 100, y: 50 }, { x: 100 + CLICK_PX + 1, y: 50 })).toBe(false);
+    expect(hasArmedDrag({ x: 100, y: 50 }, { x: 100 + CLICK_PX + 1, y: 50 })).toBe(true);
     expect(pointerTravelPx({ x: 0, y: 0 }, { x: 10, y: 0 })).toBe(10);
   });
 
@@ -30,6 +34,7 @@ describe("isClickGesture", () => {
     expect(onePixelInInches).toBeGreaterThan(worldSlopInches);
     // Screen-space check correctly treats 1px as a click:
     expect(isClickGesture({ x: 40, y: 40 }, { x: 41, y: 40 })).toBe(true);
+    expect(hasArmedDrag({ x: 40, y: 40 }, { x: 41, y: 40 })).toBe(false);
   });
 });
 
