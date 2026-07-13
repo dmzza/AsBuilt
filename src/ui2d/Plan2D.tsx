@@ -20,6 +20,7 @@ import {
   type S64,
 } from "../core";
 import { useApp } from "../state/store";
+import { CLICK_PX, isClickGesture, shouldRefitForEpoch } from "../ui/interaction";
 
 export const GRADE_COLORS: Record<Grade, string> = {
   measured: "#1d4ed8",
@@ -35,21 +36,19 @@ interface View {
 }
 
 type DragState =
-  | { kind: "junction"; key: string; wx: number; wy: number; downWx: number; downWy: number }
+  | { kind: "junction"; key: string; wx: number; wy: number; sx: number; sy: number }
   | {
       kind: "opening";
       key: string;
       centerAlong: number;
       originAlong: number;
-      downWx: number;
-      downWy: number;
+      sx: number;
+      sy: number;
     }
-  | { kind: "fixture"; key: string; wx: number; wy: number; downWx: number; downWy: number };
+  | { kind: "fixture"; key: string; wx: number; wy: number; sx: number; sy: number };
 
 const JUNCTION_SNAP_PX = 12;
 const GRID_INCH = 1; // drawing rounds to whole inches
-/** Ignore pointer travel below this (inches) so click-to-select doesn't move geometry. */
-const CLICK_SLOP_IN = 2 / 16;
 
 function roundInch(v: number): S64 {
   return s64FromInches(Math.round(v));
@@ -86,9 +85,8 @@ export function Plan2D(): JSX.Element {
 
   // --- reset fit when demo loads / folder opens
   useEffect(() => {
-    if (sceneEpoch !== fittedEpoch.current) {
+    if (shouldRefitForEpoch(fittedEpoch.current, sceneEpoch, true)) {
       fitted.current = false;
-      fittedEpoch.current = sceneEpoch;
     }
   }, [sceneEpoch]);
 
@@ -256,10 +254,11 @@ export function Plan2D(): JSX.Element {
     return out;
   }, [suspects]);
 
-  // --- initial fit
+  // --- initial fit (and refit when sceneEpoch advances via the reset effect)
   useEffect(() => {
     if (fitted.current || geometry === null || geometry.junctions.length === 0) return;
     fitted.current = true;
+    fittedEpoch.current = sceneEpoch;
     const xs = geometry.junctions.map((j) => j.x);
     const ys = geometry.junctions.map((j) => j.y);
     const minX = Math.min(...xs);
@@ -270,7 +269,7 @@ export function Plan2D(): JSX.Element {
     const bh = Math.max(maxY - minY, 60);
     const ppi = Math.min(size.w / bw, size.h / bh) * 0.7;
     setView({ cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, ppi: Math.max(ppi, 0.5) });
-  }, [geometry, size]);
+  }, [geometry, size, sceneEpoch]);
 
   // --- wheel: pan (trackpad scroll) or zoom (pinch / ctrl+wheel)
   useEffect(() => {
@@ -476,10 +475,9 @@ export function Plan2D(): JSX.Element {
       // reach pointerup without any intermediate pointermove events.
       const rect = e.currentTarget.getBoundingClientRect();
       const { wx, wy } = toWorld(e.clientX - rect.left, e.clientY - rect.top);
-      const pointerTravel = Math.hypot(wx - drag.downWx, wy - drag.downWy);
-      // Click-to-select: pointerdown already selected; don't treat click offset
-      // from the object center as a move (that was yanking openings/fixtures).
-      if (pointerTravel > CLICK_SLOP_IN) {
+      // Screen-pixel travel — NOT world inches. At ppi≈2, 1px is 0.5", which
+      // wrongly exceeded a 1/8" world slop and treated clicks as moves.
+      if (!isClickGesture({ x: drag.sx, y: drag.sy }, { x: e.clientX, y: e.clientY }, CLICK_PX)) {
         if (drag.kind === "junction") {
           dragJunction(drag.key, { x: roundInch(wx), y: roundInch(wy) });
         } else if (drag.kind === "fixture") {
@@ -503,10 +501,15 @@ export function Plan2D(): JSX.Element {
     e.stopPropagation();
     select(key);
     const p = geometry?.junctions.find((j) => j.key === key);
-    if (p === undefined || svgRef.current === null) return;
-    const rect = svgRef.current.getBoundingClientRect();
-    const { wx, wy } = toWorld(e.clientX - rect.left, e.clientY - rect.top);
-    setDrag({ kind: "junction", key, wx: p.x, wy: p.y, downWx: wx, downWy: wy });
+    if (p === undefined) return;
+    setDrag({
+      kind: "junction",
+      key,
+      wx: p.x,
+      wy: p.y,
+      sx: e.clientX,
+      sy: e.clientY,
+    });
   };
 
   const startOpeningDrag = (key: string, e: ReactPointerEvent): void => {
@@ -514,21 +517,19 @@ export function Plan2D(): JSX.Element {
     e.stopPropagation();
     select(key);
     const view = openings.find((o) => o.key === key);
-    if (view === undefined || geometry === null || svgRef.current === null) return;
+    if (view === undefined || geometry === null) return;
     const w = geometry.walls.find((g) => g.key === view.wall);
     if (w === undefined) return;
     const midX = (view.jambA.x + view.jambB.x) / 2;
     const midY = (view.jambA.y + view.jambB.y) / 2;
     const along = Math.hypot(midX - w.a.x, midY - w.a.y);
-    const rect = svgRef.current.getBoundingClientRect();
-    const { wx, wy } = toWorld(e.clientX - rect.left, e.clientY - rect.top);
     setDrag({
       kind: "opening",
       key,
       centerAlong: along,
       originAlong: along,
-      downWx: wx,
-      downWy: wy,
+      sx: e.clientX,
+      sy: e.clientY,
     });
   };
 
@@ -537,10 +538,15 @@ export function Plan2D(): JSX.Element {
     e.stopPropagation();
     select(key);
     const f = fixtures.find((v) => v.key === key);
-    if (f === undefined || svgRef.current === null) return;
-    const rect = svgRef.current.getBoundingClientRect();
-    const { wx, wy } = toWorld(e.clientX - rect.left, e.clientY - rect.top);
-    setDrag({ kind: "fixture", key, wx: f.x, wy: f.y, downWx: wx, downWy: wy });
+    if (f === undefined) return;
+    setDrag({
+      kind: "fixture",
+      key,
+      wx: f.x,
+      wy: f.y,
+      sx: e.clientX,
+      sy: e.clientY,
+    });
   };
 
   // --- grid lines
@@ -668,7 +674,12 @@ export function Plan2D(): JSX.Element {
             );
           }
           return (
-            <g key={o.key} style={{ cursor: "pointer" }} onPointerDown={(e) => startOpeningDrag(o.key, e)}>
+            <g
+              key={o.key}
+              data-key={o.key}
+              style={{ cursor: "pointer" }}
+              onPointerDown={(e) => startOpeningDrag(o.key, e)}
+            >
               {/* the gap: erase the wall between the jambs */}
               <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#fcfcfd" strokeWidth={gapW} />
               {o.opKind === "window" ? (
@@ -702,7 +713,12 @@ export function Plan2D(): JSX.Element {
           const p = toScreen(f.x - fw / 2, f.y + fd / 2);
           const isSel = selection === f.key;
           return (
-            <g key={f.key} style={{ cursor: "grab" }} onPointerDown={(e) => startFixtureDrag(f.key, e)}>
+            <g
+              key={f.key}
+              data-key={f.key}
+              style={{ cursor: "grab" }}
+              onPointerDown={(e) => startFixtureDrag(f.key, e)}
+            >
               <rect
                 x={p.x}
                 y={p.y}
