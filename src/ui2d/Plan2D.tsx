@@ -342,7 +342,12 @@ export function Plan2D(): JSX.Element {
     const nextLevels = levelViews(preview);
     const thickness = new Map<string, number>();
     for (const [key, eff] of preview.resolved.effective) {
-      if (eff.stmt.kind === "walltype") thickness.set(key, eff.stmt.thickness / 64);
+      if (eff.stmt.kind !== "walltype") continue;
+      const i = preview.solution.system.varIndex.get(`t:${key}`);
+      thickness.set(
+        key,
+        i !== undefined ? preview.solution.x[i]! : eff.stmt.thickness / 64,
+      );
     }
     const walls: {
       key: string;
@@ -725,7 +730,7 @@ export function Plan2D(): JSX.Element {
     if (tool === "measure") {
       e.stopPropagation();
       const face =
-        pipeline !== null ? defaultMeasureRef(pipeline, { wall: key }) : "inner";
+        pipeline !== null ? defaultMeasureRef(pipeline, { wall: key }) : undefined;
       openEditor({
         target: { kind: "measure-wall", wall: key, face },
         anchor: { x: e.clientX, y: e.clientY },
