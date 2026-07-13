@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { fixtureViews, junctionPos, openingViews, type Pipeline } from "../core";
 import { useApp } from "../state/store";
+import { shouldRefitForEpoch } from "../ui/interaction";
 
 /**
  * The 3D view. Plan world (inches, y = north) maps to three.js as
@@ -244,9 +245,11 @@ export function View3D(): JSX.Element {
     disposeGroup(state.group);
     buildScene(pipeline, state.group, selection);
 
-    const needsFit =
-      state.group.children.length > 0 &&
-      (!state.fitted || state.fittedEpoch !== sceneEpoch);
+    const needsFit = shouldRefitForEpoch(
+      state.fittedEpoch,
+      sceneEpoch,
+      state.group.children.length > 0,
+    );
     if (needsFit) {
       state.fitted = true;
       state.fittedEpoch = sceneEpoch;
@@ -259,6 +262,7 @@ export function View3D(): JSX.Element {
         size * 0.6,
         center.z + size * 0.7,
       );
+      state.controls.update();
     }
   }, [pipeline, selection, sceneEpoch]);
 

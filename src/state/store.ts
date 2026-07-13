@@ -190,6 +190,7 @@ export const useApp = create<AppState>((set, get) => ({
       editor: null,
       past: [],
       future: [],
+      tool: "select",
       wallType: firstWallType(project),
       sceneEpoch: get().sceneEpoch + 1,
       ...compute(project, DEMO_BRANCH),

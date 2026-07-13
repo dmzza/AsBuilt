@@ -165,4 +165,117 @@ describe("app smoke (jsdom)", () => {
     // chaining: pending start is now the end junction
     expect(state.pendingStart).toEqual({ existing: "j2" });
   });
+
+  test("clicking a fixture (offset from center, no drag) does not move it", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+    // Isolate from prior tests' zustand leftovers (boot does not clear selection/tool).
+    await act(async () => {
+      useApp.getState().setTool("select");
+      useApp.getState().loadDemo();
+    });
+
+    const before = useApp.getState().project!.files.get("asbuilt.abl")!;
+    expect(before).toMatch(/fixture fridge \{[^}]*at: ~\(26'-0", 8'-0"\)/);
+
+    const svg = container.querySelector("svg");
+    const g = container.querySelector('[data-key="fridge"]');
+    expect(svg).not.toBeNull();
+    expect(g).not.toBeNull();
+
+    vi.spyOn(svg!, "getBoundingClientRect").mockReturnValue({
+      x: 0,
+      y: 0,
+      top: 0,
+      left: 0,
+      bottom: 600,
+      right: 800,
+      width: 800,
+      height: 600,
+      toJSON() {
+        return {};
+      },
+    });
+
+    await act(async () => {
+      fireEvent.pointerDown(g!, { clientX: 420, clientY: 310, pointerId: 1 });
+      fireEvent.pointerUp(svg!, { clientX: 421, clientY: 310, pointerId: 1 });
+    });
+
+    expect(useApp.getState().selection).toBe("fridge");
+    const after = useApp.getState().project!.files.get("asbuilt.abl")!;
+    expect(after).toMatch(/fixture fridge \{[^}]*at: ~\(26'-0", 8'-0"\)/);
+    expect(after).toBe(before);
+
+    // Contrast: a real drag (well beyond CLICK_PX) must still move the fixture.
+    await act(async () => {
+      fireEvent.pointerDown(g!, { clientX: 420, clientY: 310, pointerId: 1 });
+      fireEvent.pointerUp(svg!, { clientX: 520, clientY: 310, pointerId: 1 });
+    });
+    const dragged = useApp.getState().project!.files.get("asbuilt.abl")!;
+    expect(dragged).not.toBe(before);
+    expect(dragged).toMatch(/fixture fridge \{/);
+  });
+
+  test("clicking a window (offset along wall, no drag) does not rewrite its offset", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+    await act(async () => {
+      useApp.getState().setTool("select");
+      useApp.getState().loadDemo();
+    });
+
+    const before = useApp.getState().project!.files.get("asbuilt.abl")!;
+    expect(before).toContain(`window win1 { in: dl.north, at: 4'-0" from dl.nw`);
+
+    const svg = container.querySelector("svg");
+    const g = container.querySelector('[data-key="win1"]');
+    expect(svg).not.toBeNull();
+    expect(g).not.toBeNull();
+    vi.spyOn(svg!, "getBoundingClientRect").mockReturnValue({
+      x: 0,
+      y: 0,
+      top: 0,
+      left: 0,
+      bottom: 600,
+      right: 800,
+      width: 800,
+      height: 600,
+      toJSON() {
+        return {};
+      },
+    });
+
+    await act(async () => {
+      fireEvent.pointerDown(g!, { clientX: 200, clientY: 80, pointerId: 1 });
+      fireEvent.pointerUp(svg!, { clientX: 202, clientY: 81, pointerId: 1 });
+    });
+
+    expect(useApp.getState().selection).toBe("win1");
+    const after = useApp.getState().project!.files.get("asbuilt.abl")!;
+    expect(after).toContain(`window win1 { in: dl.north, at: 4'-0" from dl.nw`);
+    expect(after).toBe(before);
+  });
+
+  test("loadDemo bumps sceneEpoch so views know to refit", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+    const epoch0 = useApp.getState().sceneEpoch;
+    await act(async () => {
+      useApp.getState().loadDemo();
+    });
+    expect(useApp.getState().sceneEpoch).toBe(epoch0 + 1);
+    await act(async () => {
+      useApp.getState().loadDemo();
+    });
+    expect(useApp.getState().sceneEpoch).toBe(epoch0 + 2);
+  });
 });
