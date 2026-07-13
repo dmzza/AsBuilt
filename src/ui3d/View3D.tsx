@@ -109,7 +109,7 @@ function buildScene(pipeline: Pipeline, group: THREE.Group, selection: string | 
   }
 }
 
-function disposeGroup(group: THREE.Group): void {
+export function disposeGroup(group: THREE.Group): void {
   const materials = new Set<THREE.Material>();
   for (const child of [...group.children]) {
     group.remove(child);
