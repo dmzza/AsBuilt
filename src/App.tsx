@@ -110,7 +110,10 @@ function Field({ value, onCommit, placeholder, title }: FieldProps): JSX.Element
             setEditing(false);
           }
         }}
-        onBlur={() => setEditing(false)}
+        onBlur={() => {
+          onCommit(text);
+          setEditing(false);
+        }}
       />
       {error !== null && <span className="field-error">{error}</span>}
     </span>
