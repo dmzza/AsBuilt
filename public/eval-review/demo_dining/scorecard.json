@@ -1,0 +1,411 @@
+{
+  "provisionalScore": {
+    "layout": 1,
+    "dims": 1,
+    "spans": 1,
+    "overall": 1
+  },
+  "findings": [],
+  "transform": {
+    "scale": 1,
+    "rotation": 0,
+    "tx": -0.18789484222088504,
+    "ty": -0.09624064667957555
+  },
+  "notes": [
+    "Align: scale=1.0000 rot=0.00°",
+    "Using 8 verified reference gold dim(s)",
+    "Using 8 verified candidate gold dim(s)",
+    "No vision client — skipped topology vision pass"
+  ],
+  "referenceDimsUsed": [
+    {
+      "id": "dim-1",
+      "valueInches": 96,
+      "valueText": "8'-0\"",
+      "labelBBox": {
+        "x": 2466,
+        "y": 552,
+        "w": 60,
+        "h": 18
+      },
+      "span": {
+        "a": {
+          "x": 2496,
+          "y": 96
+        },
+        "b": {
+          "x": 2496,
+          "y": 1056
+        }
+      },
+      "verified": true,
+      "confidence": 1
+    },
+    {
+      "id": "dim-2",
+      "valueInches": 240,
+      "valueText": "20'-0\"",
+      "labelBBox": {
+        "x": 1266,
+        "y": 72,
+        "w": 60,
+        "h": 18
+      },
+      "span": {
+        "a": {
+          "x": 96,
+          "y": 96
+        },
+        "b": {
+          "x": 2496,
+          "y": 96
+        }
+      },
+      "verified": true,
+      "confidence": 1
+    },
+    {
+      "id": "dim-3",
+      "valueInches": 144,
+      "valueText": "12'-0\"",
+      "labelBBox": {
+        "x": 786,
+        "y": 1632,
+        "w": 60,
+        "h": 18
+      },
+      "span": {
+        "a": {
+          "x": 1536,
+          "y": 1656
+        },
+        "b": {
+          "x": 96,
+          "y": 1656
+        }
+      },
+      "verified": true,
+      "confidence": 1
+    },
+    {
+      "id": "dim-4",
+      "valueInches": 156,
+      "valueText": "13'-0\"",
+      "labelBBox": {
+        "x": 66,
+        "y": 852,
+        "w": 60,
+        "h": 18
+      },
+      "span": {
+        "a": {
+          "x": 96,
+          "y": 1656
+        },
+        "b": {
+          "x": 96,
+          "y": 96
+        }
+      },
+      "verified": true,
+      "confidence": 1
+    },
+    {
+      "id": "dim-5",
+      "valueInches": 138,
+      "valueText": "11'-6\"",
+      "labelBBox": {
+        "x": 3636,
+        "y": 1632,
+        "w": 60,
+        "h": 18
+      },
+      "span": {
+        "a": {
+          "x": 2976,
+          "y": 1656
+        },
+        "b": {
+          "x": 4356,
+          "y": 1656
+        }
+      },
+      "verified": true,
+      "confidence": 1
+    },
+    {
+      "id": "dim-6",
+      "valueInches": 120,
+      "valueText": "10'-0\"",
+      "labelBBox": {
+        "x": 4326,
+        "y": 1032,
+        "w": 60,
+        "h": 18
+      },
+      "span": {
+        "a": {
+          "x": 4356,
+          "y": 1656
+        },
+        "b": {
+          "x": 4356,
+          "y": 456
+        }
+      },
+      "verified": true,
+      "confidence": 1
+    },
+    {
+      "id": "dim-7",
+      "valueInches": 138,
+      "valueText": "11'-6\"",
+      "labelBBox": {
+        "x": 3636,
+        "y": 432,
+        "w": 60,
+        "h": 18
+      },
+      "span": {
+        "a": {
+          "x": 4356,
+          "y": 456
+        },
+        "b": {
+          "x": 2976,
+          "y": 456
+        }
+      },
+      "verified": true,
+      "confidence": 1
+    },
+    {
+      "id": "dim-8",
+      "valueInches": 120,
+      "valueText": "10'-0\"",
+      "labelBBox": {
+        "x": 2946,
+        "y": 1032,
+        "w": 60,
+        "h": 18
+      },
+      "span": {
+        "a": {
+          "x": 2976,
+          "y": 456
+        },
+        "b": {
+          "x": 2976,
+          "y": 1656
+        }
+      },
+      "verified": true,
+      "confidence": 1
+    }
+  ],
+  "candidateDimsUsed": [
+    {
+      "id": "dim-1",
+      "valueInches": 96,
+      "valueText": "8'-0\"",
+      "labelBBox": {
+        "x": 2466,
+        "y": 552,
+        "w": 60,
+        "h": 18
+      },
+      "span": {
+        "a": {
+          "x": 2496,
+          "y": 96
+        },
+        "b": {
+          "x": 2496,
+          "y": 1056
+        }
+      },
+      "verified": true,
+      "confidence": 1
+    },
+    {
+      "id": "dim-2",
+      "valueInches": 240,
+      "valueText": "20'-0\"",
+      "labelBBox": {
+        "x": 1266,
+        "y": 72,
+        "w": 60,
+        "h": 18
+      },
+      "span": {
+        "a": {
+          "x": 96,
+          "y": 96
+        },
+        "b": {
+          "x": 2496,
+          "y": 96
+        }
+      },
+      "verified": true,
+      "confidence": 1
+    },
+    {
+      "id": "dim-3",
+      "valueInches": 144,
+      "valueText": "12'-0\"",
+      "labelBBox": {
+        "x": 786,
+        "y": 1632,
+        "w": 60,
+        "h": 18
+      },
+      "span": {
+        "a": {
+          "x": 1536,
+          "y": 1656
+        },
+        "b": {
+          "x": 96,
+          "y": 1656
+        }
+      },
+      "verified": true,
+      "confidence": 1
+    },
+    {
+      "id": "dim-4",
+      "valueInches": 156,
+      "valueText": "13'-0\"",
+      "labelBBox": {
+        "x": 66,
+        "y": 852,
+        "w": 60,
+        "h": 18
+      },
+      "span": {
+        "a": {
+          "x": 96,
+          "y": 1656
+        },
+        "b": {
+          "x": 96,
+          "y": 96
+        }
+      },
+      "verified": true,
+      "confidence": 1
+    },
+    {
+      "id": "dim-5",
+      "valueInches": 138,
+      "valueText": "11'-6\"",
+      "labelBBox": {
+        "x": 3636,
+        "y": 1632,
+        "w": 60,
+        "h": 18
+      },
+      "span": {
+        "a": {
+          "x": 2976,
+          "y": 1656
+        },
+        "b": {
+          "x": 4356,
+          "y": 1656
+        }
+      },
+      "verified": true,
+      "confidence": 1
+    },
+    {
+      "id": "dim-6",
+      "valueInches": 120,
+      "valueText": "10'-0\"",
+      "labelBBox": {
+        "x": 4326,
+        "y": 1032,
+        "w": 60,
+        "h": 18
+      },
+      "span": {
+        "a": {
+          "x": 4356,
+          "y": 1656
+        },
+        "b": {
+          "x": 4356,
+          "y": 456
+        }
+      },
+      "verified": true,
+      "confidence": 1
+    },
+    {
+      "id": "dim-7",
+      "valueInches": 138,
+      "valueText": "11'-6\"",
+      "labelBBox": {
+        "x": 3636,
+        "y": 432,
+        "w": 60,
+        "h": 18
+      },
+      "span": {
+        "a": {
+          "x": 4356,
+          "y": 456
+        },
+        "b": {
+          "x": 2976,
+          "y": 456
+        }
+      },
+      "verified": true,
+      "confidence": 1
+    },
+    {
+      "id": "dim-8",
+      "valueInches": 120,
+      "valueText": "10'-0\"",
+      "labelBBox": {
+        "x": 2946,
+        "y": 1032,
+        "w": 60,
+        "h": 18
+      },
+      "span": {
+        "a": {
+          "x": 2976,
+          "y": 456
+        },
+        "b": {
+          "x": 2976,
+          "y": 1656
+        }
+      },
+      "verified": true,
+      "confidence": 1
+    }
+  ],
+  "proposedReferenceReadings": [],
+  "proposedCandidateReadings": [],
+  "overlays": {
+    "referencePng": "reference.png",
+    "candidatePng": "candidate.png",
+    "alignedCandidatePng": "aligned_candidate.png",
+    "onionSkinPng": "onion_skin.png",
+    "layoutDiffPng": "layout_diff.png",
+    "dimsOverlayPng": "dims_overlay.png"
+  },
+  "visionStatus": {
+    "availability": "gold_only",
+    "label": "Gold dims",
+    "summary": "Scoring used verified gold dimensions. Topology vision was skipped (no API key).",
+    "details": [
+      "No vision client — skipped topology vision pass"
+    ]
+  }
+}

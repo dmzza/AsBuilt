@@ -71,6 +71,7 @@ jobs:
               '',
               `- **Stable preview:** ${alias}`,
               `- **This deploy:** ${unique}`,
+              `- **Eval review (demo):** ${alias}/eval-review/demo_dining/review.html`,
             ].join('\n');
 
             const comments = await github.paginate(github.rest.issues.listComments, {

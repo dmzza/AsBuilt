@@ -19,6 +19,18 @@ npm run eval -- eval/cases/demo_dining
 npm run eval:review -- eval/cases/demo_dining
 ```
 
+## Pages preview
+
+PR deploys include a static demo review so you can exercise the interactive UI
+without running a local server:
+
+`https://<preview>.asbuilt.pages.dev/eval-review/demo_dining/review.html`
+
+(also linked from the Cloudflare Pages PR comment). The HTML is regenerated on
+each `build:pages` from `public/eval-review/demo_dining/scorecard.json`, so
+changes to `eval/src/report.ts` show up on the next deploy. Gold save is
+download-only in this mode (no Node API on Pages).
+
 ## Case layout
 
 ```

@@ -146,6 +146,8 @@ vite.config.ts.timestamp-*
 eval/cases/**/reviews/
 # Durable Nano Banana cleaned rasters (local cache; seedable from reviews/latest)
 eval/cases/**/cleaned/
+# Pages preview review.html is regenerated at build from scorecard.json
+public/eval-review/**/review.html
 
 # macOS
 .DS_Store
