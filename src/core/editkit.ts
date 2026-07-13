@@ -379,6 +379,24 @@ export function proposeDelete(project: Project, branch: string, key: string): Te
     pipeline.resolved.effective.has(k),
   );
   if (targets.length === 0) throw new Error(`nothing to delete at "${key}"`);
+
+  // If deleting a junction, also delete all walls that reference it
+  const eff = pipeline.resolved.effective.get(key);
+  if (eff?.stmt.kind === "junction") {
+    for (const [wallKey, wallEff] of pipeline.resolved.effective) {
+      if (wallEff.stmt.kind === "wall") {
+        if (wallEff.stmt.from === key || wallEff.stmt.to === key) {
+          // Add the wall and its companions to targets
+          for (const k of [wallKey, `${wallKey}.length`, `${wallKey}.axis`]) {
+            if (pipeline.resolved.effective.has(k) && !targets.includes(k)) {
+              targets.push(k);
+            }
+          }
+        }
+      }
+    }
+  }
+
   const edits: TextEdit[] = [];
   const tombstones: string[] = [];
   for (const t of targets) {

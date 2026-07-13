@@ -46,6 +46,7 @@ function roundInch(v: number): S64 {
 
 export function Plan2D(): JSX.Element {
   const pipeline = useApp((s) => s.pipeline);
+  const project = useApp((s) => s.project);
   const tool = useApp((s) => s.tool);
   const selection = useApp((s) => s.selection);
   const pendingStart = useApp((s) => s.pendingStart);
@@ -63,6 +64,17 @@ export function Plan2D(): JSX.Element {
   const [pan, setPan] = useState<{ px: number; py: number } | null>(null);
   const [cursor, setCursor] = useState<{ wx: number; wy: number } | null>(null);
   const fitted = useRef(false);
+  const layerNamesRef = useRef<string>("");
+
+  // --- reset fit when project changes (demo load, folder open)
+  useEffect(() => {
+    if (project === null) return;
+    const layersKey = [...project.layers.keys()].sort().join("|");
+    if (layersKey !== layerNamesRef.current && layerNamesRef.current !== "") {
+      fitted.current = false;
+    }
+    layerNamesRef.current = layersKey;
+  }, [project]);
 
   // --- size tracking
   useEffect(() => {
@@ -366,6 +378,7 @@ export function Plan2D(): JSX.Element {
         onPointerLeave={() => {
           setPan(null);
           setCursor(null);
+          setDrag(null);
         }}
       >
         {/* grid */}
