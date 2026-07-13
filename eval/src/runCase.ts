@@ -53,9 +53,6 @@ export function saveMeta(caseDir: string, meta: CaseMeta): void {
 
 export async function ensureCandidate(caseDir: string, meta: CaseMeta): Promise<Buffer> {
   const candPath = join(caseDir, "candidate.png");
-  if (existsSync(candPath) && !meta.asbuiltProject) {
-    return readFileSync(candPath);
-  }
   const projectRel =
     meta.asbuiltProject ?? (existsSync(join(caseDir, "project")) ? "project" : null);
   if (projectRel) {
