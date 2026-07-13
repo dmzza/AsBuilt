@@ -78,6 +78,7 @@ export {
   applyEdits,
   proposeMove,
   proposeMoveWall,
+  verifyWallMove,
   proposeSetParam,
   proposeAddWall,
   proposeSplitWall,

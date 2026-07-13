@@ -196,7 +196,8 @@ function verifyMove(
   }
 }
 
-function verifyWallMove(
+/** True when edits translate both wall endpoints by `delta` (midpoint + ends). */
+export function verifyWallMove(
   project: Project,
   edits: TextEdit[],
   branch: string,

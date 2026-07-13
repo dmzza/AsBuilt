@@ -23,6 +23,7 @@ import {
   proposeMove,
   proposeMoveWall,
   s64FromInches,
+  thicknessValue,
   type FaceRef,
   type Grade,
   type OpeningView,
@@ -343,10 +344,9 @@ export function Plan2D(): JSX.Element {
     const thickness = new Map<string, number>();
     for (const [key, eff] of preview.resolved.effective) {
       if (eff.stmt.kind !== "walltype") continue;
-      const i = preview.solution.system.varIndex.get(`t:${key}`);
       thickness.set(
         key,
-        i !== undefined ? preview.solution.x[i]! : eff.stmt.thickness / 64,
+        thicknessValue(preview.solution, key) ?? eff.stmt.thickness / 64,
       );
     }
     const walls: {

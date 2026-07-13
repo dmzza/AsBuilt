@@ -40,8 +40,8 @@ export type ViewMode = "2d" | "3d" | "split";
 export type EditorTarget =
   | { kind: "param"; name: string; prov: Provenance }
   | { kind: "param-measure"; name: string }
-  | { kind: "measure-wall"; wall: string; face: FaceEnd }
-  | { kind: "measure-pair"; a: string; b: string; face: FaceEnd }
+  | { kind: "measure-wall"; wall: string; face?: FaceEnd }
+  | { kind: "measure-pair"; a: string; b: string; face?: FaceEnd }
   | { kind: "meas-edit"; name: string };
 
 export interface EditorState {
