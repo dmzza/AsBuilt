@@ -203,8 +203,13 @@ describe("app smoke (jsdom)", () => {
     await act(async () => {
       fireEvent.pointerDown(g!, { clientX: 420, clientY: 310, pointerId: 1 });
     });
+    // Realistic trackpad click: a few pointermoves under the arm threshold.
     await act(async () => {
-      fireEvent.pointerUp(svg!, { clientX: 421, clientY: 310, pointerId: 1 });
+      fireEvent.pointerMove(svg!, { clientX: 424, clientY: 313, pointerId: 1 });
+      fireEvent.pointerMove(svg!, { clientX: 427, clientY: 314, pointerId: 1 });
+    });
+    await act(async () => {
+      fireEvent.pointerUp(svg!, { clientX: 428, clientY: 314, pointerId: 1 });
     });
 
     expect(useApp.getState().selection).toBe("fridge");
@@ -212,9 +217,12 @@ describe("app smoke (jsdom)", () => {
     expect(after).toMatch(/fixture fridge \{[^}]*at: ~\(26'-0", 8'-0"\)/);
     expect(after).toBe(before);
 
-    // Contrast: a real drag (well beyond CLICK_PX) must still move the fixture.
+    // Contrast: a real drag (pointermove past CLICK_PX) must still move the fixture.
     await act(async () => {
       fireEvent.pointerDown(g!, { clientX: 420, clientY: 310, pointerId: 1 });
+    });
+    await act(async () => {
+      fireEvent.pointerMove(svg!, { clientX: 520, clientY: 310, pointerId: 1 });
     });
     await act(async () => {
       fireEvent.pointerUp(svg!, { clientX: 520, clientY: 310, pointerId: 1 });
@@ -269,7 +277,7 @@ describe("app smoke (jsdom)", () => {
     expect(after).toBe(before);
   });
 
-  test("loadDemo bumps sceneEpoch so views know to refit", async () => {
+  test("loadDemo bumps sceneEpoch so views remount/refit", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(<App />);
@@ -279,9 +287,12 @@ describe("app smoke (jsdom)", () => {
       useApp.getState().loadDemo();
     });
     expect(useApp.getState().sceneEpoch).toBe(epoch0 + 1);
+    // key={sceneEpoch} remounts Plan2D — empty-state shouldn't stick after Demo.
+    expect(container.querySelector("svg.plan")).not.toBeNull();
     await act(async () => {
       useApp.getState().loadDemo();
     });
     expect(useApp.getState().sceneEpoch).toBe(epoch0 + 2);
+    expect(container.querySelector("svg.plan")).not.toBeNull();
   });
 });

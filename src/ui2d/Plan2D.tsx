@@ -20,7 +20,7 @@ import {
   type S64,
 } from "../core";
 import { useApp } from "../state/store";
-import { CLICK_PX, isClickGesture, shouldRefitForEpoch } from "../ui/interaction";
+import { CLICK_PX, hasArmedDrag } from "../ui/interaction";
 
 export const GRADE_COLORS: Record<Grade, string> = {
   measured: "#1d4ed8",
@@ -78,17 +78,12 @@ export function Plan2D(): JSX.Element {
   const [size, setSize] = useState({ w: 800, h: 600 });
   const [view, setView] = useState<View>({ cx: 200, cy: 80, ppi: 2 });
   const [drag, setDrag] = useState<DragState | null>(null);
+  /** Becomes true only after pointer travel exceeds CLICK_PX. Clicks never arm. */
+  const dragArmed = useRef(false);
   const [pan, setPan] = useState<{ px: number; py: number } | null>(null);
   const [cursor, setCursor] = useState<{ wx: number; wy: number } | null>(null);
   const fitted = useRef(false);
   const fittedEpoch = useRef(-1);
-
-  // --- reset fit when demo loads / folder opens
-  useEffect(() => {
-    if (shouldRefitForEpoch(fittedEpoch.current, sceneEpoch, true)) {
-      fitted.current = false;
-    }
-  }, [sceneEpoch]);
 
   // --- size tracking
   useEffect(() => {
@@ -254,9 +249,12 @@ export function Plan2D(): JSX.Element {
     return out;
   }, [suspects]);
 
-  // --- initial fit (and refit when sceneEpoch advances via the reset effect)
+  // --- fit / refit when sceneEpoch advances (demo reload, open folder).
+  // Epoch is checked here — not in a separate reset effect — so identical
+  // demo geometry still reframes after the user has panned.
   useEffect(() => {
-    if (fitted.current || geometry === null || geometry.junctions.length === 0) return;
+    if (geometry === null || geometry.junctions.length === 0) return;
+    if (fitted.current && fittedEpoch.current === sceneEpoch) return;
     fitted.current = true;
     fittedEpoch.current = sceneEpoch;
     const xs = geometry.junctions.map((j) => j.x);
@@ -452,6 +450,17 @@ export function Plan2D(): JSX.Element {
     setCursor({ wx, wy });
 
     if (drag !== null) {
+      // Arm only after real travel. Sub-threshold jitter never updates the
+      // preview and never commits on pointerup — so a click on a fixture edge
+      // cannot yank it to the pointer (which is offset from the object center).
+      if (!dragArmed.current) {
+        if (
+          !hasArmedDrag({ x: drag.sx, y: drag.sy }, { x: e.clientX, y: e.clientY }, CLICK_PX)
+        ) {
+          return;
+        }
+        dragArmed.current = true;
+      }
       if (drag.kind === "opening") {
         const view = openings.find((o) => o.key === drag.key);
         const hit = view !== undefined ? nearestWallAlong(geometry, view.wall, wx, wy) : null;
@@ -471,13 +480,16 @@ export function Plan2D(): JSX.Element {
 
   const onPointerUp = (e: ReactPointerEvent<SVGSVGElement>): void => {
     if (drag !== null) {
-      // Use the release position itself: a fast flick (or synthetic drag) can
-      // reach pointerup without any intermediate pointermove events.
-      const rect = e.currentTarget.getBoundingClientRect();
-      const { wx, wy } = toWorld(e.clientX - rect.left, e.clientY - rect.top);
-      // Screen-pixel travel — NOT world inches. At ppi≈2, 1px is 0.5", which
-      // wrongly exceeded a 1/8" world slop and treated clicks as moves.
-      if (!isClickGesture({ x: drag.sx, y: drag.sy }, { x: e.clientX, y: e.clientY }, CLICK_PX)) {
+      const armed =
+        dragArmed.current ||
+        hasArmedDrag({ x: drag.sx, y: drag.sy }, { x: e.clientX, y: e.clientY }, CLICK_PX);
+      dragArmed.current = false;
+      // Commit only when the gesture crossed the threshold (during move or on
+      // a flick that skipped intermediate moves). Never commit a click — even
+      // when release is offset from the object center.
+      if (armed) {
+        const rect = e.currentTarget.getBoundingClientRect();
+        const { wx, wy } = toWorld(e.clientX - rect.left, e.clientY - rect.top);
         if (drag.kind === "junction") {
           dragJunction(drag.key, { x: roundInch(wx), y: roundInch(wy) });
         } else if (drag.kind === "fixture") {
@@ -502,6 +514,7 @@ export function Plan2D(): JSX.Element {
     select(key);
     const p = geometry?.junctions.find((j) => j.key === key);
     if (p === undefined) return;
+    dragArmed.current = false;
     setDrag({
       kind: "junction",
       key,
@@ -523,6 +536,7 @@ export function Plan2D(): JSX.Element {
     const midX = (view.jambA.x + view.jambB.x) / 2;
     const midY = (view.jambA.y + view.jambB.y) / 2;
     const along = Math.hypot(midX - w.a.x, midY - w.a.y);
+    dragArmed.current = false;
     setDrag({
       kind: "opening",
       key,
@@ -539,6 +553,7 @@ export function Plan2D(): JSX.Element {
     select(key);
     const f = fixtures.find((v) => v.key === key);
     if (f === undefined) return;
+    dragArmed.current = false;
     setDrag({
       kind: "fixture",
       key,
@@ -595,6 +610,7 @@ export function Plan2D(): JSX.Element {
         onPointerLeave={() => {
           setPan(null);
           setCursor(null);
+          dragArmed.current = false;
           setDrag(null);
         }}
       >

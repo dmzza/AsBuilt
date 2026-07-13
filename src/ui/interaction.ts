@@ -1,5 +1,6 @@
-/** Screen-space threshold: pointer travel within this is a click, not a drag. */
-export const CLICK_PX = 4;
+/** Screen-space threshold: pointer must travel farther than this before a
+ *  gesture is considered a drag. Real trackpad clicks often jitter 5–10px. */
+export const CLICK_PX = 12;
 
 export function pointerTravelPx(
   down: { x: number; y: number },
@@ -15,6 +16,15 @@ export function isClickGesture(
   thresholdPx: number = CLICK_PX,
 ): boolean {
   return pointerTravelPx(down, up) <= thresholdPx;
+}
+
+/** True once pointer travel has crossed the click/drag threshold. */
+export function hasArmedDrag(
+  down: { x: number; y: number },
+  current: { x: number; y: number },
+  thresholdPx: number = CLICK_PX,
+): boolean {
+  return pointerTravelPx(down, current) > thresholdPx;
 }
 
 /**

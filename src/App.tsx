@@ -584,13 +584,14 @@ export default function App(): JSX.Element {
   }, [undo, redo]);
 
   const viewMode = useApp((s) => s.viewMode);
+  const sceneEpoch = useApp((s) => s.sceneEpoch);
 
   return (
     <div className="app">
       <Toolbar />
       <div className="main">
-        {viewMode !== "3d" && <Plan2D />}
-        {viewMode !== "2d" && <View3D />}
+        {viewMode !== "3d" && <Plan2D key={sceneEpoch} />}
+        {viewMode !== "2d" && <View3D key={sceneEpoch} />}
         <div className="sidebar">
           <SelectionPanel />
           <DiagnosticsPanel />
