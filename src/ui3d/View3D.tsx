@@ -125,6 +125,7 @@ export function View3D(): JSX.Element {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const pipeline = useApp((s) => s.pipeline);
   const selection = useApp((s) => s.selection);
+  const sceneEpoch = useApp((s) => s.sceneEpoch);
   const select = useApp((s) => s.select);
 
   const sceneRef = useRef<{
@@ -135,6 +136,7 @@ export function View3D(): JSX.Element {
     group: THREE.Group;
     raf: number;
     fitted: boolean;
+    fittedEpoch: number;
   } | null>(null);
 
   // one-time init
@@ -167,7 +169,16 @@ export function View3D(): JSX.Element {
     const group = new THREE.Group();
     scene.add(group);
 
-    const state = { renderer, scene, camera, controls, group, raf: 0, fitted: false };
+    const state = {
+      renderer,
+      scene,
+      camera,
+      controls,
+      group,
+      raf: 0,
+      fitted: false,
+      fittedEpoch: -1,
+    };
     sceneRef.current = state;
 
     const resize = (): void => {
@@ -230,13 +241,15 @@ export function View3D(): JSX.Element {
   useEffect(() => {
     const state = sceneRef.current;
     if (state === null || pipeline === null) return;
-    const hadChildren = state.group.children.length > 0;
     disposeGroup(state.group);
     buildScene(pipeline, state.group, selection);
 
-    const hasChildren = state.group.children.length > 0;
-    if (hasChildren && (!state.fitted || !hadChildren)) {
+    const needsFit =
+      state.group.children.length > 0 &&
+      (!state.fitted || state.fittedEpoch !== sceneEpoch);
+    if (needsFit) {
       state.fitted = true;
+      state.fittedEpoch = sceneEpoch;
       const box = new THREE.Box3().setFromObject(state.group);
       const center = box.getCenter(new THREE.Vector3());
       const size = box.getSize(new THREE.Vector3()).length();
@@ -247,7 +260,7 @@ export function View3D(): JSX.Element {
         center.z + size * 0.7,
       );
     }
-  }, [pipeline, selection]);
+  }, [pipeline, selection, sceneEpoch]);
 
   return <div ref={wrapRef} className="view3d" />;
 }
