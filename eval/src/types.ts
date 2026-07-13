@@ -145,10 +145,14 @@ export interface OverlayArtifacts {
   structureRefPng?: string;
   /** Walls/windows/doors-only redraw used for structure extract (candidate pixel space). */
   structureCandPng?: string;
+  /** structure_cand warped into reference pixel grid (same frame as structure_ref). */
+  structureCandAlignedPng?: string;
   /** Dimensions/measurement-lines-only redraw used for dim extract (ref pixel space). */
   dimsRefPng?: string;
   /** Dimensions/measurement-lines-only redraw used for dim extract (candidate pixel space). */
   dimsCandPng?: string;
+  /** dims_cand warped into reference pixel grid (same frame as dims_ref). */
+  dimsCandAlignedPng?: string;
 }
 
 export interface ScorePlanPairInput {
