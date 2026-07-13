@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { basename, extname, join, resolve } from "node:path";
 import { extractDimensions } from "./dims/extract";
+import { formatInches } from "./image";
 import { drawDimsOverlay, drawStructureOverlay } from "./overlay";
 import { writeExtractReport } from "./report";
 import {
@@ -78,7 +79,7 @@ export function resolveExtractCaseDir(
   opts?: { outDir?: string; cwd?: string },
 ): { caseDir: string; createdCase: boolean } {
   const cwd = opts?.cwd ?? process.cwd();
-  const root = resolve(input);
+  const root = resolve(cwd, input);
 
   if (isCaseDir(root)) {
     return { caseDir: root, createdCase: false };
@@ -109,37 +110,6 @@ export function resolveExtractCaseDir(
   );
 }
 
-function formatInches(inches: number): string {
-  const sign = inches < 0 ? "-" : "";
-  const abs = Math.abs(inches);
-  const feet = Math.floor(abs / 12);
-  const rem = abs - feet * 12;
-  const whole = Math.floor(rem);
-  const frac = rem - whole;
-  const eighths = Math.round(frac * 8);
-  let inchPart = `${whole}`;
-  if (eighths === 8) {
-    inchPart = `${whole + 1}`;
-  } else if (eighths > 0) {
-    const g = gcd(eighths, 8);
-    inchPart =
-      whole > 0 ? `${whole} ${eighths / g}/${8 / g}` : `${eighths / g}/${8 / g}`;
-  }
-  if (feet === 0) return `${sign}${inchPart}"`;
-  if (whole === 0 && eighths === 0) return `${sign}${feet}'-0"`;
-  return `${sign}${feet}'-${inchPart}"`;
-}
-
-function gcd(a: number, b: number): number {
-  let x = Math.abs(a);
-  let y = Math.abs(b);
-  while (y) {
-    const t = y;
-    y = x % y;
-    x = t;
-  }
-  return x || 1;
-}
 
 function writeSummaryMd(opts: {
   caseId: string;
@@ -325,7 +295,11 @@ export async function extractReferenceCase(
     ...meta,
     title: meta.title ?? caseId.replace(/_/g, " "),
   };
-  if (opts.visionTiles === false) metaOut.visionTiles = false;
+  if (tiles) {
+    delete metaOut.visionTiles;
+  } else {
+    metaOut.visionTiles = false;
+  }
   saveMeta(caseDir, metaOut);
 
   const reviewHtml = writeExtractReport(reviewDir, {
