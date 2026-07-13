@@ -590,8 +590,8 @@ export default function App(): JSX.Element {
     <div className="app">
       <Toolbar />
       <div className="main">
-        {viewMode !== "3d" && <Plan2D key={sceneEpoch} />}
-        {viewMode !== "2d" && <View3D key={sceneEpoch} />}
+        {viewMode !== "3d" && <Plan2D key={`plan-${sceneEpoch}`} />}
+        {viewMode !== "2d" && <View3D key={`view3d-${sceneEpoch}`} />}
         <div className="sidebar">
           <SelectionPanel />
           <DiagnosticsPanel />
