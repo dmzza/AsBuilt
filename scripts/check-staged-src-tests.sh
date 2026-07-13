@@ -7,14 +7,7 @@ set -euo pipefail
 
 is_vitest_file() {
   local f="$1"
-  case "$f" in
-    src/*.test.ts|src/*.test.tsx) return 0 ;;
-    src/*/*.test.ts|src/*/*.test.tsx) return 0 ;;
-    src/*/*/*.test.ts|src/*/*/*.test.tsx) return 0 ;;
-    src/*/*/*/*.test.ts|src/*/*/*/*.test.tsx) return 0 ;;
-    src/*/*/*/*/*.test.ts|src/*/*/*/*/*.test.tsx) return 0 ;;
-  esac
-  return 1
+  [[ "$f" =~ ^src/.+\.test\.tsx?$ ]]
 }
 
 is_prod_src() {
