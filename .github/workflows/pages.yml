@@ -33,10 +33,21 @@ jobs:
       - name: Build
         run: npm run build:pages
 
+      # First run creates the empty Pages project; later runs no-op on "already exists".
+      - name: Ensure Pages project exists
+        continue-on-error: true
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "4.110.0"
+          command: pages project create asbuilt --production-branch=main
+
       - name: Deploy to Cloudflare Pages
         id: deploy
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy dist --project-name=asbuilt --branch=${{ github.head_ref || github.ref_name }}
+          wranglerVersion: "4.110.0"
+          command: pages deploy dist --project-name=asbuilt --branch=${{ github.head_ref || github.ref_name }} --commit-dirty=true
