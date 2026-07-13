@@ -202,6 +202,8 @@ describe("app smoke (jsdom)", () => {
 
     await act(async () => {
       fireEvent.pointerDown(g!, { clientX: 420, clientY: 310, pointerId: 1 });
+    });
+    await act(async () => {
       fireEvent.pointerUp(svg!, { clientX: 421, clientY: 310, pointerId: 1 });
     });
 
@@ -213,6 +215,8 @@ describe("app smoke (jsdom)", () => {
     // Contrast: a real drag (well beyond CLICK_PX) must still move the fixture.
     await act(async () => {
       fireEvent.pointerDown(g!, { clientX: 420, clientY: 310, pointerId: 1 });
+    });
+    await act(async () => {
       fireEvent.pointerUp(svg!, { clientX: 520, clientY: 310, pointerId: 1 });
     });
     const dragged = useApp.getState().project!.files.get("asbuilt.abl")!;
@@ -254,6 +258,8 @@ describe("app smoke (jsdom)", () => {
 
     await act(async () => {
       fireEvent.pointerDown(g!, { clientX: 200, clientY: 80, pointerId: 1 });
+    });
+    await act(async () => {
       fireEvent.pointerUp(svg!, { clientX: 202, clientY: 81, pointerId: 1 });
     });
 
