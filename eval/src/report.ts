@@ -513,12 +513,15 @@ async function detectServer() {
 }
 
 function goldPayload() {
-  return {
+  const verifiedRef = state.reference.filter(d => d.verified).map(d => ({ ...d, verified: true }));
+  const verifiedCand = state.candidate.filter(d => d.verified).map(d => ({ ...d, verified: true }));
+  const payload = {
     version: 1,
     note: 'Image-anchored gold: value + span endpoints in pixel space.',
-    reference: state.reference.filter(d => d.verified).map(d => ({ ...d, verified: true })),
-    candidate: state.candidate.filter(d => d.verified).map(d => ({ ...d, verified: true })),
   };
+  if (verifiedRef.length > 0) payload.reference = verifiedRef;
+  if (verifiedCand.length > 0) payload.candidate = verifiedCand;
+  return payload;
 }
 
 async function persistGold(reason) {
@@ -1180,7 +1183,7 @@ function applyOverlayBlend() {
 
 function applyBlend() {
   bgCand.style.opacity = String(state.blend);
-  bgRef.style.opacity = String(1);
+  bgRef.style.opacity = String(1 - state.blend);
   applyOverlayBlend();
 }
 
@@ -1195,8 +1198,11 @@ function applyView() {
     b.classList.toggle('active', b.getAttribute('data-view') === state.view);
   });
   applyBlend();
-  // If src unchanged, still refresh overlays for detection mode.
-  if (!refChanged && state.imgW) renderOverlay();
+  if (refChanged) {
+    if (bgRef.complete && bgRef.naturalWidth) onBgReady();
+  } else if (state.imgW) {
+    renderOverlay();
+  }
 }
 
 function onBgReady() {

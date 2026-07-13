@@ -189,8 +189,7 @@ export async function redrawImageClean(
       );
       out = await sharp(out)
         .resize(prepared.origW, prepared.origH, {
-          fit: "contain",
-          background: { r: 255, g: 255, b: 255 },
+          fit: "fill",
         })
         .png()
         .toBuffer();
