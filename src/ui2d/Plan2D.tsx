@@ -557,17 +557,21 @@ export function Plan2D(): JSX.Element {
       const target = e.target as HTMLElement;
       if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
       if (e.key === "Escape") {
+        // Cancel in-progress drag (including live ghost) and dismiss measure UI.
+        clearPreview();
+        useApp.getState().closeEditor();
         cancelPending();
         setMeasurePending(null);
         select(null);
         setDrag(null);
+        dragArmed.current = false;
       } else if (e.key === "Delete" || e.key === "Backspace") {
         deleteSelection();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [cancelPending, select, deleteSelection, setMeasurePending]);
+  }, [cancelPending, select, deleteSelection, setMeasurePending, clearPreview]);
 
   // --- snapping helper: junctions first, then mid-wall T-join, then grid
   const snap = useCallback(

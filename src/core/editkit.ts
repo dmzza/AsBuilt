@@ -1439,6 +1439,83 @@ export function proposeBakeSolvedPose(
   return edits;
 }
 
+/** Walls that use `junction` as an endpoint (effective names). */
+function wallsAtJunction(pipeline: Pipeline, junction: string): string[] {
+  const out: string[] = [];
+  for (const [key, eff] of pipeline.resolved.effective) {
+    if (eff.stmt.kind !== "wall") continue;
+    if (eff.stmt.from === junction || eff.stmt.to === junction) out.push(key);
+  }
+  return out;
+}
+
+function wallOtherEnd(wall: WallStmt, junction: string): string {
+  if (wall.from === junction) return wall.to;
+  if (wall.to === junction) return wall.from;
+  throw new Error(`wall "${wall.name}" does not meet "${junction}"`);
+}
+
+function wallLengthInches(pipeline: Pipeline, wallName: string): number {
+  const eff = pipeline.resolved.effective.get(wallName);
+  if (eff?.stmt.kind !== "wall") return 0;
+  const a = junctionPos(pipeline.solution, eff.stmt.from);
+  const b = junctionPos(pipeline.solution, eff.stmt.to);
+  if (a === null || b === null) return 0;
+  return Math.hypot(b.x - a.x, b.y - a.y);
+}
+
+/**
+ * True when W1 and W2 meet at `junction` and their other ends are nearly
+ * collinear through it (opposite directions along one centerline).
+ */
+function collinearThroughJunction(
+  pipeline: Pipeline,
+  junction: string,
+  w1: string,
+  w2: string,
+): boolean {
+  const e1 = pipeline.resolved.effective.get(w1);
+  const e2 = pipeline.resolved.effective.get(w2);
+  if (e1?.stmt.kind !== "wall" || e2?.stmt.kind !== "wall") return false;
+  const j = junctionPos(pipeline.solution, junction);
+  const a = junctionPos(pipeline.solution, wallOtherEnd(e1.stmt, junction));
+  const b = junctionPos(pipeline.solution, wallOtherEnd(e2.stmt, junction));
+  if (j === null || a === null || b === null) return false;
+  const v1x = a.x - j.x;
+  const v1y = a.y - j.y;
+  const v2x = b.x - j.x;
+  const v2y = b.y - j.y;
+  const n1 = Math.hypot(v1x, v1y);
+  const n2 = Math.hypot(v2x, v2y);
+  if (n1 < 0.01 || n2 < 0.01) return false;
+  // Opposite directions along a line → unit vectors nearly anti-parallel.
+  const dot = (v1x / n1) * (v2x / n2) + (v1y / n1) * (v2y / n2);
+  return dot < -0.95;
+}
+
+/** Prefer the "A" stub name (host reclaim) over `.b` / `.bN` when merging. */
+function preferMergedWallName(a: string, b: string): string {
+  if (b === `${a}.b` || b.startsWith(`${a}.b`)) return a;
+  if (a === `${b}.b` || a.startsWith(`${b}.b`)) return b;
+  return a.length <= b.length ? a : b;
+}
+
+/**
+ * If `stem` is the non-collinear leg of a T at `junction`, return the two
+ * collinear host stubs to merge when the stem is deleted.
+ */
+function collinearPairAtT(
+  pipeline: Pipeline,
+  junction: string,
+  stem: string,
+): { a: string; b: string } | null {
+  const others = wallsAtJunction(pipeline, junction).filter((w) => w !== stem);
+  if (others.length !== 2) return null;
+  const [w1, w2] = others as [string, string];
+  if (!collinearThroughJunction(pipeline, junction, w1, w2)) return null;
+  return { a: w1, b: w2 };
+}
+
 /**
  * Delete an element. Own authored lines are blanked; inherited or
  * template-expanded statements get tombstones. Deleting a wall also removes
@@ -1447,6 +1524,9 @@ export function proposeBakeSolvedPose(
  * Before removing geometry, the current solved pose is baked into sketches /
  * soft params so the re-solve after delete does not drift the rest of the plan
  * toward a new soft compromise ("delete should change nothing else").
+ *
+ * Deleting the stem of a T-join unsplits the host: the mid junction and two
+ * collinear stubs merge back into one wall.
  */
 export function proposeDelete(project: Project, branch: string, key: string): TextEdit[] {
   // Snapshot pose while the deleted element still constrains the model.
@@ -1474,13 +1554,112 @@ export function proposeDelete(project: Project, branch: string, key: string): Te
     }
   }
 
-  // If deleting a wall, also delete all openings hosted on it
+  // If deleting a wall, also delete all openings hosted on it — and unsplit
+  // any T-join mid where this wall is the stem.
+  const appendLines: string[] = [];
   if (eff?.stmt.kind === "wall") {
     for (const [openingKey, openingEff] of resolved.effective) {
       if (openingEff.stmt.kind === "opening" && openingEff.stmt.wall === key) {
         if (!targets.includes(openingKey)) {
           targets.push(openingKey);
         }
+      }
+    }
+
+    for (const mid of [eff.stmt.from, eff.stmt.to]) {
+      const pair = collinearPairAtT(pipeline, mid, key);
+      if (pair === null) continue;
+      const eA = resolved.effective.get(pair.a);
+      const eB = resolved.effective.get(pair.b);
+      if (eA?.stmt.kind !== "wall" || eB?.stmt.kind !== "wall") continue;
+      const outerA = wallOtherEnd(eA.stmt, mid);
+      const outerB = wallOtherEnd(eB.stmt, mid);
+      const mergedName = preferMergedWallName(pair.a, pair.b);
+      const wallType = eA.stmt.wallType;
+
+      for (const stub of [pair.a, pair.b]) {
+        for (const k of [stub, `${stub}.length`, `${stub}.axis`]) {
+          if (resolved.effective.has(k) && !targets.includes(k)) targets.push(k);
+        }
+        for (const [openingKey, openingEff] of resolved.effective) {
+          if (openingEff.stmt.kind === "opening" && openingEff.stmt.wall === stub) {
+            if (!targets.includes(openingKey)) targets.push(openingKey);
+          }
+        }
+      }
+      if (resolved.effective.has(mid) && !targets.includes(mid)) {
+        targets.push(mid);
+      }
+
+      // Rebuild openings on the merged wall (offset from outerA along the span).
+      const pa = pipelineJunction(pipeline, outerA);
+      for (const stub of [pair.a, pair.b]) {
+        const stubEff = resolved.effective.get(stub);
+        if (stubEff?.stmt.kind !== "wall") continue;
+        const stubFrom = stubEff.stmt.from;
+        const stubLenView = wallLengthInches(pipeline, stub);
+        for (const [, opEff] of resolved.effective) {
+          if (opEff.stmt.kind !== "opening" || opEff.stmt.wall !== stub) continue;
+          const op = opEff.stmt;
+          const offIn = evalExprOffset(op, pipeline) / 64;
+          const wIn = op.width / 64;
+          const fromAnchored = op.anchor === stubFrom;
+          const startFromStubFrom = fromAnchored ? offIn : stubLenView - offIn - wIn;
+          const stubFromPos = pipelineJunction(pipeline, stubFrom);
+          const stubFromAlong = Math.hypot(stubFromPos.x - pa.x, stubFromPos.y - pa.y);
+          // If the stub's `from` is the far end, walking along the stub increases
+          // distance from outerA only when stubFrom is nearer to outerA.
+          const stubTo = stubEff.stmt.to;
+          const stubToPos = pipelineJunction(pipeline, stubTo);
+          const stubToAlong = Math.hypot(stubToPos.x - pa.x, stubToPos.y - pa.y);
+          const alongIncreases = stubToAlong >= stubFromAlong;
+          const startAlong = alongIncreases
+            ? stubFromAlong + startFromStubFrom
+            : stubFromAlong - startFromStubFrom - wIn;
+          const clamped = Math.max(0, Math.round(startAlong));
+          appendLines.push(
+            printStmt({
+              ...op,
+              wall: mergedName,
+              anchor: outerA,
+              offset: {
+                terms: [{ sign: 1, kind: "lit", value: s64FromInches(clamped) }],
+              },
+            }),
+          );
+        }
+      }
+
+      appendLines.push(
+        printStmt({
+          kind: "wall",
+          name: mergedName,
+          from: outerA,
+          to: outerB,
+          wallType,
+          loc: { file: "", line: 0 },
+          leadingComments: [],
+        }),
+      );
+      const axisA = resolved.effective.get(`${pair.a}.axis`);
+      const axisB = resolved.effective.get(`${pair.b}.axis`);
+      const orient =
+        axisA?.stmt.kind === "axis"
+          ? axisA.stmt.orient
+          : axisB?.stmt.kind === "axis"
+            ? axisB.stmt.orient
+            : undefined;
+      if (orient !== undefined) {
+        appendLines.push(
+          printStmt({
+            kind: "axis",
+            name: `${mergedName}.axis`,
+            wall: mergedName,
+            orient,
+            loc: { file: "", line: 0 },
+            leadingComments: [],
+          }),
+        );
       }
     }
   }
@@ -1520,6 +1699,13 @@ export function proposeDelete(project: Project, branch: string, key: string): Te
       kind: "append",
       file: project.layers.get(branch)!.file,
       lines: tombstones,
+    });
+  }
+  if (appendLines.length > 0) {
+    edits.push({
+      kind: "append",
+      file: project.layers.get(branch)!.file,
+      lines: appendLines,
     });
   }
   return edits;

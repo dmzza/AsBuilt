@@ -137,6 +137,8 @@ interface AppState {
   rotateFixture(name: string): void;
   openEditor(editor: EditorState): void;
   closeEditor(): void;
+  /** Change measure face without wiping the typed draft value. */
+  setMeasureFace(face: FaceEnd): void;
   /** Parse and apply the editor's entered value. Returns an error message or null. */
   commitEditor(raw: string): string | null;
   undo(): void;
@@ -739,7 +741,17 @@ export const useApp = create<AppState>((set, get) => ({
 
   closeEditor() {
     get().clearPreview();
-    set({ editor: null });
+    set({ editor: null, measurePending: null });
+  },
+
+  setMeasureFace(face) {
+    const editor = get().editor;
+    if (editor === null) return;
+    if (editor.target.kind !== "measure-wall" && editor.target.kind !== "measure-pair") {
+      return;
+    }
+    // Patch face in place — recreating the editor would wipe the draft via useEffect.
+    set({ editor: { ...editor, target: { ...editor.target, face } } });
   },
 
   commitEditor(raw) {

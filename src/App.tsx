@@ -1458,15 +1458,34 @@ function DiagnosticsPanel(): JSX.Element | null {
 
 /* ------------------------------------------------------------ value editor */
 
+/** Stable identity for an editor session — face changes must not remount/reset draft. */
+function editorSessionKey(editor: NonNullable<ReturnType<typeof useApp.getState>["editor"]>): string {
+  const t = editor.target;
+  switch (t.kind) {
+    case "param":
+      return `param:${t.name}`;
+    case "param-measure":
+      return `param-measure:${t.name}`;
+    case "measure-wall":
+      return `measure-wall:${t.wall}`;
+    case "measure-pair":
+      return `measure-pair:${t.a}:${t.b}`;
+    case "meas-edit":
+      return `meas-edit:${t.name}`;
+  }
+}
+
 function ValueEditor(): JSX.Element | null {
   const editor = useApp((s) => s.editor);
   const commitEditor = useApp((s) => s.commitEditor);
   const closeEditor = useApp((s) => s.closeEditor);
   const previewEditorValue = useApp((s) => s.previewEditorValue);
-  const openEditor = useApp((s) => s.openEditor);
+  const setMeasureFace = useApp((s) => s.setMeasureFace);
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const sessionKey = editor !== null ? editorSessionKey(editor) : null;
 
   useEffect(() => {
     if (editor !== null) {
@@ -1477,7 +1496,32 @@ function ValueEditor(): JSX.Element | null {
         inputRef.current?.select();
       }, 0);
     }
-  }, [editor]);
+    // Intentionally keyed by session, not full editor — face toggles must keep the draft.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- sessionKey captures open identity
+  }, [sessionKey]);
+
+  // Dismiss on Escape (even when focus isn't in the input) and click-outside.
+  useEffect(() => {
+    if (editor === null) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      closeEditor();
+    };
+    const onPointerDown = (e: PointerEvent): void => {
+      const panel = panelRef.current;
+      if (panel !== null && !panel.contains(e.target as Node)) {
+        closeEditor();
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, [editor, closeEditor]);
 
   if (editor === null) return null;
   const left = Math.min(editor.anchor.x, window.innerWidth - 260);
@@ -1490,15 +1534,12 @@ function ValueEditor(): JSX.Element | null {
 
   const setFace = (next: FaceEnd): void => {
     if (measureTarget === null) return;
-    openEditor({
-      ...editor,
-      target: { ...measureTarget, face: next },
-    });
+    setMeasureFace(next);
     if (text.trim().length > 0) previewEditorValue(text);
   };
 
   return (
-    <div className="value-editor" style={{ left, top }}>
+    <div ref={panelRef} className="value-editor" style={{ left, top }}>
       <div className="value-editor-label">{editor.label}</div>
       {face !== null && (
         <div className="face-ref-row" role="group" aria-label="Tape reference">
