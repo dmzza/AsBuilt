@@ -15,6 +15,7 @@
     "check": "vite-node scripts/check.ts",
     "eval": "vite-node scripts/eval.ts",
     "eval:review": "vite-node scripts/eval-review.ts",
+    "eval:regen-review": "vite-node scripts/regen-review-aligned.ts",
     "eval:seed": "vite-node scripts/seed-eval-demo.ts",
     "eval:ui": "vite-node scripts/eval-ui.ts"
   },
