@@ -2,8 +2,8 @@
 /**
  * Regression suite for the 5 Bugbot findings autofixed on M7 (PR 6).
  * Authored against pre-autofix tip 83867a3 (each case fails there).
- * Passes on 375dfe9+ (force-break face refs, measure default, solved
- * thickness, wall-move verification).
+ * Passes on 375dfe9+ (force-break drops incident meases, measure default,
+ * solved thickness, wall-move verification).
  */
 import { beforeEach, describe, expect, test } from "vitest";
 import {
@@ -31,21 +31,25 @@ beforeEach(() => {
 });
 
 describe("Bugbot M7 regressions (autofix)", () => {
-  test("1. force-break re-tape clears face ref (does not keep { ref: inner } on centerline distance)", () => {
-    // Fully measured room + face-ref diagonal. Force-break NE re-tapes the
-    // diagonal to the new centerline span — keeping { ref: inner } would feed
-    // a centerline number into a face residual and corrupt geometry.
+  test("1. force-break drops incident face-ref meases (never rewrites them as centerline tape)", () => {
+    // Fully measured room + face-ref diagonal. Force-break is not a re-tape:
+    // incident meases are removed so a centerline distance cannot keep
+    // { ref: inner } and corrupt face residuals. A meas on another room must
+    // stay untouched.
     const src = `layer asbuilt
 
 walltype int_2x4 { thickness: 4 1/2" }
 
 param k.depth = 10'-0" [measured]
 param k.width = 12'-0" [measured]
+param o.depth = 8'-0" [approximated]
+param o.width = 8'-0" [approximated]
 
 room k : rect(k.width, k.depth) { walls: int_2x4 }
+room o : rect(o.width, o.depth) { walls: int_2x4 }
 
 meas m_diag : dist(k.sw, k.ne) = 15'-7 1/2" [measured] { ref: inner }
-meas m_south : dist(k.sw, k.se) = 11'-7 1/2" [measured] { ref: inner }
+meas m_other : dist(o.sw, o.se) = 8'-0" [measured]
 `;
     const project = loadProject({ "asbuilt.abl": src });
     const forced = proposeMove(
@@ -60,12 +64,8 @@ meas m_south : dist(k.sw, k.se) = 11'-7 1/2" [measured] { ref: inner }
     expect(forced.broke ?? []).toContain("m_diag");
 
     const text = applyEdits(project, forced.edits).files.get("asbuilt.abl")!;
-    const diag = text.split("\n").find((l) => l.startsWith("meas m_diag"));
-    expect(diag).toBeDefined();
-    // Re-taped to centerline — must not retain the face ref.
-    expect(diag!).not.toMatch(/\{\s*ref:\s*inner\s*\}/);
-    // Unrelated face meas (not incident to k.ne) keeps its ref.
-    expect(text).toMatch(/meas m_south :.+\{ ref: inner \}/);
+    expect(text).not.toMatch(/meas m_diag/);
+    expect(text).toMatch(/meas m_other : dist\(o\.sw, o\.se\) = 8'-0" \[measured\]/);
   });
 
   test("2. measure default is centerline (never invents inner) when room has no dims:inner", () => {
