@@ -69,19 +69,20 @@ function dim(
 }
 
 describe("refineTransformFromDims", () => {
-  test("recovers true scale from value-matched spans", () => {
-    // Cand is 2× larger in pixels than ref for the same inch values.
+  test("recovers true scale and translation from value-matched spans", () => {
+    // Cand is 2× in pixels + offset. True map: scale=0.5, tx=75, ty=75.
     const reference = [
-      dim("r1", 120, 100, 100, 340, 100), // 240px = 10'
-      dim("r2", 96, 100, 100, 100, 292), // 192px = 8'
-      dim("r3", 144, 100, 200, 388, 200), // 288px = 12'
+      dim("r1", 120, 100, 100, 340, 100), // 240px
+      dim("r2", 96, 100, 100, 100, 292), // 192px
+      dim("r3", 144, 100, 115, 388, 115), // 288px
     ];
     const candidate = [
       dim("c1", 120, 50, 50, 530, 50), // 480px
       dim("c2", 96, 50, 50, 50, 434), // 384px
       dim("c3", 144, 50, 80, 626, 80), // 576px
     ];
-    const inkGuess = { scale: 0.9, rotation: 0, tx: 0, ty: 0 };
+    // Wrong ink guess: bad scale and translation.
+    const inkGuess = { scale: 0.9, rotation: 0, tx: -40, ty: 200 };
     const { transform, refined, pairCount } = refineTransformFromDims(
       reference,
       candidate,
@@ -90,6 +91,8 @@ describe("refineTransformFromDims", () => {
     expect(refined).toBe(true);
     expect(pairCount).toBe(3);
     expect(transform.scale).toBeCloseTo(0.5, 3);
+    expect(transform.tx).toBeCloseTo(75, 0);
+    expect(transform.ty).toBeCloseTo(75, 0);
   });
 
   test("skips when too few matches", () => {
