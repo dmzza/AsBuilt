@@ -16,6 +16,7 @@ import { drawDimsOverlay, drawStructureOverlay } from "./overlay";
 import { writeExtractReport } from "./report";
 import {
   casesRoot,
+  ensureReference,
   isCaseDir,
   loadMeta,
   saveMeta,
@@ -106,7 +107,7 @@ export function resolveExtractCaseDir(
   }
 
   throw new Error(
-    `Expected a case directory with reference.png or an image file; got: ${input}`,
+    `Expected a case directory with reference.png, reference_project/, or an image file; got: ${input}`,
   );
 }
 
@@ -170,9 +171,25 @@ export async function extractReferenceCase(
     cwd: opts.cwd,
   });
   const caseId = basename(caseDir);
+  const meta: CaseMeta = loadMeta(caseDir);
   const refPath = join(caseDir, "reference.png");
+  
+  // Render reference.png from reference_project if needed
   if (!existsSync(refPath)) {
-    throw new Error(`Missing reference.png in ${caseDir}`);
+    const projectRel =
+      meta.referenceProject ??
+      (existsSync(join(caseDir, "reference_project")) ? "reference_project" : null);
+    if (projectRel) {
+      try {
+        ensureReference(caseDir, meta);
+      } catch (e) {
+        throw new Error(
+          `Missing reference.png and failed to render from ${projectRel}: ${(e as Error).message}`,
+        );
+      }
+    } else {
+      throw new Error(`Missing reference.png in ${caseDir}`);
+    }
   }
 
   const reference = readFileSync(refPath);

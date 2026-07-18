@@ -347,25 +347,33 @@ export function refineTransformFromDims(
   const usedForScale = new Set<string>();
 
   // Pass 1 — value matches for scale (longer spans first).
+  // When multiple dims share the same valueInches, prefer spatial proximity
+  // under the initial transform to avoid cross-pairing duplicate readings.
   const refs = [...reference].sort((a, b) => spanLenPx(b) - spanLenPx(a));
   for (const ref of refs) {
     const refLen = spanLenPx(ref);
     if (refLen < minSpanPx) continue;
+    const refMid = mid(ref.span.a, ref.span.b);
     let best: DimReading | null = null;
     let bestDv = Infinity;
     let bestCandLen = 0;
+    let bestDist = Infinity;
     for (const cand of candidate) {
       if (usedForScale.has(cand.id)) continue;
       const dv = Math.abs(cand.valueInches - ref.valueInches);
       if (dv > dimTol) continue;
       const candLen = spanLenPx(cand);
       if (candLen < minSpanPx) continue;
-      const score = dv * 1000 - candLen;
-      const bestScore = bestDv * 1000 - bestCandLen;
+      const candMid = applyTransform(mid(cand.span.a, cand.span.b), initial);
+      const d = dist(refMid, candMid);
+      // Score: prefer tighter value match, then spatial proximity, then longer span.
+      const score = dv * 10000 + d - candLen * 0.01;
+      const bestScore = bestDv * 10000 + bestDist - bestCandLen * 0.01;
       if (!best || score < bestScore) {
         best = cand;
         bestDv = dv;
         bestCandLen = candLen;
+        bestDist = d;
       }
     }
     if (!best) continue;
@@ -387,7 +395,7 @@ export function refineTransformFromDims(
   }
 
   const ratio = newScale / Math.max(1e-9, initial.scale);
-  if (ratio < 0.4 || ratio > 2.5) {
+  if (ratio < 0.2 || ratio > 5.0) {
     notes.push(
       `Align dim-refine rejected: scale ${newScale.toFixed(4)} is ${ratio.toFixed(2)}× ink estimate ${initial.scale.toFixed(4)}`,
     );

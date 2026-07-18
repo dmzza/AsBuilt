@@ -211,19 +211,22 @@ export async function runCase(caseDir: string): Promise<ScorePlanPairResult> {
   const fileReferenceGold = loadDimGold(goldPathForImage(caseDir, "reference"));
   const fileCandidateGold = loadDimGold(goldPathForImage(caseDir, "candidate"));
 
-  // File gold wins when present; otherwise ABL-derived dims act as gold.
+  // File gold wins when present, but NOT when reference was swapped to ABL —
+  // file gold spans are in the old sketch frame and will misalign.
   const usingAblRefDims =
-    fileReferenceGold.length === 0 && (reference.dims?.length ?? 0) > 0;
+    (reference.fromAbl || fileReferenceGold.length === 0) &&
+    (reference.dims?.length ?? 0) > 0;
   const usingAblCandDims =
-    fileCandidateGold.length === 0 && (candidate.dims?.length ?? 0) > 0;
+    (candidate.fromAbl || fileCandidateGold.length === 0) &&
+    (candidate.dims?.length ?? 0) > 0;
   const referenceGold = usingAblRefDims
     ? reference.dims
-    : fileReferenceGold.length > 0
+    : fileReferenceGold.length > 0 && !reference.fromAbl
       ? fileReferenceGold
       : undefined;
   const candidateGold = usingAblCandDims
     ? candidate.dims
-    : fileCandidateGold.length > 0
+    : fileCandidateGold.length > 0 && !candidate.fromAbl
       ? fileCandidateGold
       : undefined;
 

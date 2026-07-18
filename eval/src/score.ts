@@ -305,17 +305,18 @@ export async function scorePlanPair(
           dimsCandAligned,
         );
       }
-      // Durable cache for ABL-derived (or other override) layer PNGs.
-      if (structureRefCleaned && overlays.structureRefPng) {
+      // Only cache vision-extracted layers, not ABL-derived overrides.
+      // ABL-derived layers would clobber extract artifacts from sketch workflows.
+      if (structureRefCleaned && overlays.structureRefPng && !input.referenceStructure) {
         writeFileSync(join(input.cleanedCacheDir, overlays.structureRefPng), structureRefCleaned);
       }
-      if (structureCandCleaned && overlays.structureCandPng) {
+      if (structureCandCleaned && overlays.structureCandPng && !input.candidateStructure) {
         writeFileSync(join(input.cleanedCacheDir, overlays.structureCandPng), structureCandCleaned);
       }
-      if (dimsRefCleaned && overlays.dimsRefPng) {
+      if (dimsRefCleaned && overlays.dimsRefPng && !input.referenceGold) {
         writeFileSync(join(input.cleanedCacheDir, overlays.dimsRefPng), dimsRefCleaned);
       }
-      if (dimsCandCleaned && overlays.dimsCandPng) {
+      if (dimsCandCleaned && overlays.dimsCandPng && !input.candidateGold) {
         writeFileSync(join(input.cleanedCacheDir, overlays.dimsCandPng), dimsCandCleaned);
       }
     }
