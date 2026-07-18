@@ -158,10 +158,26 @@ export async function scorePlanPair(
   const aligned = await warpCandidateToReference(input.candidate, input.reference, transform);
   const onion = await onionSkin(input.reference, aligned);
 
+  // Prefer walls-only structure layers for layout — full Original PNGs include
+  // grids, dim labels, fixtures, and sketch clutter that aren't layout.
+  let structureCandAligned: Buffer | null = null;
+  if (structureCandCleaned) {
+    structureCandAligned = await warpCandidateToReference(
+      structureCandCleaned,
+      input.reference,
+      transform,
+    );
+  }
+  const useStructureLayout = Boolean(structureRefCleaned && structureCandAligned);
   const layout = await compareLayout(
-    input.reference,
-    aligned,
+    useStructureLayout ? structureRefCleaned! : input.reference,
+    useStructureLayout ? structureCandAligned! : aligned,
     input.tolerances?.layoutMismatch ?? 0.35,
+  );
+  notes.push(
+    useStructureLayout
+      ? "Layout compare: structure_ref vs structure_cand_aligned (walls-only)"
+      : "Layout compare: Original reference vs aligned candidate (structure layers unavailable)",
   );
 
   const dimMatch = matchDimensions(
@@ -236,19 +252,11 @@ export async function scorePlanPair(
   };
   if (structureRefCleaned) overlays.structureRefPng = "structure_ref.png";
   if (structureCandCleaned) overlays.structureCandPng = "structure_cand.png";
+  if (structureCandAligned) overlays.structureCandAlignedPng = "structure_cand_aligned.png";
   if (dimsRefCleaned) overlays.dimsRefPng = "dims_ref.png";
   if (dimsCandCleaned) overlays.dimsCandPng = "dims_cand.png";
 
-  let structureCandAligned: Buffer | null = null;
   let dimsCandAligned: Buffer | null = null;
-  if (structureCandCleaned) {
-    structureCandAligned = await warpCandidateToReference(
-      structureCandCleaned,
-      input.reference,
-      transform,
-    );
-    overlays.structureCandAlignedPng = "structure_cand_aligned.png";
-  }
   if (dimsCandCleaned) {
     dimsCandAligned = await warpCandidateToReference(
       dimsCandCleaned,
