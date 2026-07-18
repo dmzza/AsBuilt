@@ -1,13 +1,15 @@
 import sharp from "sharp";
 import {
+  dist,
   edgeMap,
   imageSize,
   inkBBox,
   inkCentroid,
   inkMask,
+  mid,
   toRgba,
 } from "./image";
-import type { Point, SimilarityTransform } from "./types";
+import type { DimReading, Point, SimilarityTransform } from "./types";
 
 /** Apply similarity: p' = R(scale * p) + t  (candidate → reference space). */
 export function applyTransform(p: Point, t: SimilarityTransform): Point {
@@ -299,6 +301,123 @@ export async function estimateSimilarityTransform(
   }
 
   return best ?? transformFromBBoxes(rb, cb, rc, cc, 0);
+}
+
+function spanLenPx(d: DimReading): number {
+  return dist(d.span.a, d.span.b);
+}
+
+function median(xs: number[]): number {
+  if (xs.length === 0) return NaN;
+  const s = [...xs].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 === 0 ? ((s[m - 1]! + s[m]!) / 2) : s[m]!;
+}
+
+/**
+ * Refine a raster-estimated similarity transform using dimension readings that
+ * share the same measured value. Scale comes from pixel span length ratios;
+ * translation from midpoints after the new scale (rotation kept).
+ *
+ * Useful when candidate is a clean ABL render whose ink bbox does not match
+ * the sketch's page framing — ink align under/over-scales the plan.
+ */
+export function refineTransformFromDims(
+  reference: DimReading[],
+  candidate: DimReading[],
+  initial: SimilarityTransform,
+  opts?: { dimTolInches?: number; minPairs?: number; minSpanPx?: number },
+): { transform: SimilarityTransform; refined: boolean; pairCount: number; notes: string[] } {
+  const dimTol = opts?.dimTolInches ?? 0.5;
+  const minPairs = opts?.minPairs ?? 3;
+  const minSpanPx = opts?.minSpanPx ?? 80;
+  const notes: string[] = [];
+
+  type Pair = { ref: DimReading; cand: DimReading; scale: number };
+  const pairs: Pair[] = [];
+  const usedCand = new Set<string>();
+
+  // Prefer unique value matches: longer spans first (more stable scale).
+  const refs = [...reference].sort((a, b) => spanLenPx(b) - spanLenPx(a));
+  for (const ref of refs) {
+    const refLen = spanLenPx(ref);
+    if (refLen < minSpanPx) continue;
+    let best: DimReading | null = null;
+    let bestDv = Infinity;
+    let bestCandLen = 0;
+    for (const cand of candidate) {
+      if (usedCand.has(cand.id)) continue;
+      const dv = Math.abs(cand.valueInches - ref.valueInches);
+      if (dv > dimTol) continue;
+      const candLen = spanLenPx(cand);
+      if (candLen < minSpanPx) continue;
+      // Prefer exact value, then longer cand span.
+      const score = dv * 1000 - candLen;
+      const bestScore = bestDv * 1000 - bestCandLen;
+      if (!best || score < bestScore) {
+        best = cand;
+        bestDv = dv;
+        bestCandLen = candLen;
+      }
+    }
+    if (!best) continue;
+    usedCand.add(best.id);
+    pairs.push({ ref, cand: best, scale: refLen / bestCandLen });
+  }
+
+  if (pairs.length < minPairs) {
+    notes.push(
+      `Align dim-refine skipped: only ${pairs.length} value-matched span(s) (need ${minPairs})`,
+    );
+    return { transform: initial, refined: false, pairCount: pairs.length, notes };
+  }
+
+  const scales = pairs.map((p) => p.scale);
+  const newScale = median(scales);
+  if (!(newScale > 0) || !Number.isFinite(newScale)) {
+    notes.push("Align dim-refine skipped: invalid median scale");
+    return { transform: initial, refined: false, pairCount: pairs.length, notes };
+  }
+
+  // Guard against pathological flips vs ink estimate.
+  const ratio = newScale / Math.max(1e-9, initial.scale);
+  if (ratio < 0.4 || ratio > 2.5) {
+    notes.push(
+      `Align dim-refine rejected: scale ${newScale.toFixed(4)} is ${ratio.toFixed(2)}× ink estimate ${initial.scale.toFixed(4)}`,
+    );
+    return { transform: initial, refined: false, pairCount: pairs.length, notes };
+  }
+
+  const rotation = initial.rotation;
+  const c = Math.cos(rotation);
+  const sn = Math.sin(rotation);
+
+  // Keep the ink-align placement of the candidate plan center; only correct scale.
+  // Dim midpoints are unreliable for translation (labels sit off walls / wrong mates).
+  let cx = 0;
+  let cy = 0;
+  for (const p of pairs) {
+    const m = mid(p.cand.span.a, p.cand.span.b);
+    cx += m.x;
+    cy += m.y;
+  }
+  cx /= pairs.length;
+  cy /= pairs.length;
+  const pivot = { x: cx, y: cy };
+  const mapped = applyTransform(pivot, initial);
+  const rx = c * (newScale * pivot.x) - sn * (newScale * pivot.y);
+  const ry = sn * (newScale * pivot.x) + c * (newScale * pivot.y);
+  const transform: SimilarityTransform = {
+    scale: newScale,
+    rotation,
+    tx: mapped.x - rx,
+    ty: mapped.y - ry,
+  };
+
+  notes.push(
+    `Align dim-refine: ${pairs.length} value-matched span(s) → scale ${initial.scale.toFixed(4)} → ${newScale.toFixed(4)} (median; translation preserves ink pivot)`,
+  );
+  return { transform, refined: true, pairCount: pairs.length, notes };
 }
 
 /** Warp candidate into reference pixel grid. */

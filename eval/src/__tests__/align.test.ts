@@ -1,7 +1,12 @@
 import { describe, expect, test } from "vitest";
 import sharp from "sharp";
-import { estimateSimilarityTransform, orthogonalFrameAngle } from "../align";
+import {
+  estimateSimilarityTransform,
+  orthogonalFrameAngle,
+  refineTransformFromDims,
+} from "../align";
 import { toRgba } from "../image";
+import type { DimReading } from "../types";
 
 async function hvPlanPng(w: number, h: number, skewDeg = 0): Promise<Buffer> {
   // Draw a simple axis-aligned rectangle room in SVG, optionally rotate.
@@ -41,5 +46,62 @@ describe("estimateSimilarityTransform", () => {
     expect(Math.abs((t.rotation * 180) / Math.PI)).toBeLessThan(3);
     expect(t.scale).toBeGreaterThan(1.5);
     expect(t.scale).toBeLessThan(2.5);
+  });
+});
+
+function dim(
+  id: string,
+  inches: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+): DimReading {
+  return {
+    id,
+    valueInches: inches,
+    valueText: `${inches}"`,
+    labelBBox: { x: ax, y: ay, w: 40, h: 16 },
+    span: { a: { x: ax, y: ay }, b: { x: bx, y: by } },
+    verified: true,
+    confidence: 1,
+  };
+}
+
+describe("refineTransformFromDims", () => {
+  test("recovers true scale from value-matched spans", () => {
+    // Cand is 2× larger in pixels than ref for the same inch values.
+    const reference = [
+      dim("r1", 120, 100, 100, 340, 100), // 240px = 10'
+      dim("r2", 96, 100, 100, 100, 292), // 192px = 8'
+      dim("r3", 144, 100, 200, 388, 200), // 288px = 12'
+    ];
+    const candidate = [
+      dim("c1", 120, 50, 50, 530, 50), // 480px
+      dim("c2", 96, 50, 50, 50, 434), // 384px
+      dim("c3", 144, 50, 80, 626, 80), // 576px
+    ];
+    const inkGuess = { scale: 0.9, rotation: 0, tx: 0, ty: 0 };
+    const { transform, refined, pairCount } = refineTransformFromDims(
+      reference,
+      candidate,
+      inkGuess,
+    );
+    expect(refined).toBe(true);
+    expect(pairCount).toBe(3);
+    expect(transform.scale).toBeCloseTo(0.5, 3);
+  });
+
+  test("skips when too few matches", () => {
+    const reference = [dim("r1", 120, 0, 0, 200, 0)];
+    const candidate = [dim("c1", 120, 0, 0, 400, 0)];
+    const { refined, notes } = refineTransformFromDims(reference, candidate, {
+      scale: 1,
+      rotation: 0,
+      tx: 0,
+      ty: 0,
+    });
+    expect(refined).toBe(false);
+    expect(notes.some((n) => /skipped/i.test(n))).toBe(true);
   });
 });

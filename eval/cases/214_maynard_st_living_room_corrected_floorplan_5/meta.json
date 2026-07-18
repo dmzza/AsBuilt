@@ -1,0 +1,7 @@
+{
+  "title": "214 Maynard — ABL candidate",
+  "branch": "asbuilt",
+  "asbuiltProject": "project",
+  "visionTiles": false,
+  "tolerances": { "dimInches": 0.5, "spanPx": 48, "layoutMismatch": 0.35 }
+}
