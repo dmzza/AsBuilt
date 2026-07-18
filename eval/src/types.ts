@@ -160,6 +160,18 @@ export interface ScorePlanPairInput {
   candidate: Buffer;
   referenceGold?: DimGold[];
   candidateGold?: DimGold[];
+  /**
+   * Precomputed structure (e.g. derived from .abl). When set, skips AI
+   * structure redraw/extract for that side.
+   */
+  referenceStructure?: StructureReading;
+  candidateStructure?: StructureReading;
+  /** Optional walls-only layer PNGs paired with structure overrides. */
+  referenceStructurePng?: Buffer;
+  candidateStructurePng?: Buffer;
+  /** Optional dims-only layer PNGs paired with gold / ABL dims. */
+  referenceDimsPng?: Buffer;
+  candidateDimsPng?: Buffer;
   tolerances?: ScoreTolerances;
   /** When true (default), call vision for dims/layout if gold missing / always for layout. */
   useVision?: boolean;
@@ -230,6 +242,12 @@ export interface CaseMeta {
   branch?: string;
   /** If set, render this project dir to candidate.png before scoring. */
   asbuiltProject?: string;
+  /**
+   * If set, render this project dir to reference.png and derive structure/dims
+   * from .abl (skips AI on the reference side). Falls back to
+   * `reference_project/` when present.
+   */
+  referenceProject?: string;
   tolerances?: ScoreTolerances;
   title?: string;
   /**

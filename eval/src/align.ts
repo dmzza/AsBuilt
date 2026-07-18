@@ -1,13 +1,15 @@
 import sharp from "sharp";
 import {
+  dist,
   edgeMap,
   imageSize,
   inkBBox,
   inkCentroid,
   inkMask,
+  mid,
   toRgba,
 } from "./image";
-import type { Point, SimilarityTransform } from "./types";
+import type { DimReading, Point, SimilarityTransform } from "./types";
 
 /** Apply similarity: p' = R(scale * p) + t  (candidate → reference space). */
 export function applyTransform(p: Point, t: SimilarityTransform): Point {
@@ -299,6 +301,174 @@ export async function estimateSimilarityTransform(
   }
 
   return best ?? transformFromBBoxes(rb, cb, rc, cc, 0);
+}
+
+function spanLenPx(d: DimReading): number {
+  return dist(d.span.a, d.span.b);
+}
+
+function median(xs: number[]): number {
+  if (xs.length === 0) return NaN;
+  const s = [...xs].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 === 0 ? ((s[m - 1]! + s[m]!) / 2) : s[m]!;
+}
+
+/**
+ * Refine a raster-estimated similarity transform using dimension readings.
+ *
+ * 1) Scale = median of ref/cand pixel-span ratios for value-matched dims.
+ * 2) Translation = median of implied (tx, ty) from value+proximity rematched
+ *    midpoints under that scale (rotation kept from ink align).
+ *
+ * Useful when candidate is a clean ABL render whose ink bbox does not match
+ * the sketch's page framing.
+ */
+export function refineTransformFromDims(
+  reference: DimReading[],
+  candidate: DimReading[],
+  initial: SimilarityTransform,
+  opts?: {
+    dimTolInches?: number;
+    minPairs?: number;
+    minSpanPx?: number;
+    /** Max midpoint distance (ref px) when rematching for translation. */
+    maxPairDistPx?: number;
+  },
+): { transform: SimilarityTransform; refined: boolean; pairCount: number; notes: string[] } {
+  const dimTol = opts?.dimTolInches ?? 0.5;
+  const minPairs = opts?.minPairs ?? 3;
+  const minSpanPx = opts?.minSpanPx ?? 80;
+  const maxPairDistPx = opts?.maxPairDistPx ?? 500;
+  const notes: string[] = [];
+
+  type Pair = { ref: DimReading; cand: DimReading; scale: number };
+  const scalePairs: Pair[] = [];
+  const usedForScale = new Set<string>();
+
+  // Pass 1 — value matches for scale (longer spans first).
+  // When multiple dims share the same valueInches, prefer spatial proximity
+  // under the initial transform to avoid cross-pairing duplicate readings.
+  const refs = [...reference].sort((a, b) => spanLenPx(b) - spanLenPx(a));
+  for (const ref of refs) {
+    const refLen = spanLenPx(ref);
+    if (refLen < minSpanPx) continue;
+    const refMid = mid(ref.span.a, ref.span.b);
+    let best: DimReading | null = null;
+    let bestDv = Infinity;
+    let bestCandLen = 0;
+    let bestDist = Infinity;
+    for (const cand of candidate) {
+      if (usedForScale.has(cand.id)) continue;
+      const dv = Math.abs(cand.valueInches - ref.valueInches);
+      if (dv > dimTol) continue;
+      const candLen = spanLenPx(cand);
+      if (candLen < minSpanPx) continue;
+      const candMid = applyTransform(mid(cand.span.a, cand.span.b), initial);
+      const d = dist(refMid, candMid);
+      // Score: prefer tighter value match, then spatial proximity, then longer span.
+      const score = dv * 10000 + d - candLen * 0.01;
+      const bestScore = bestDv * 10000 + bestDist - bestCandLen * 0.01;
+      if (!best || score < bestScore) {
+        best = cand;
+        bestDv = dv;
+        bestCandLen = candLen;
+        bestDist = d;
+      }
+    }
+    if (!best) continue;
+    usedForScale.add(best.id);
+    scalePairs.push({ ref, cand: best, scale: refLen / bestCandLen });
+  }
+
+  if (scalePairs.length < minPairs) {
+    notes.push(
+      `Align dim-refine skipped: only ${scalePairs.length} value-matched span(s) (need ${minPairs})`,
+    );
+    return { transform: initial, refined: false, pairCount: scalePairs.length, notes };
+  }
+
+  const newScale = median(scalePairs.map((p) => p.scale));
+  if (!(newScale > 0) || !Number.isFinite(newScale)) {
+    notes.push("Align dim-refine skipped: invalid median scale");
+    return { transform: initial, refined: false, pairCount: scalePairs.length, notes };
+  }
+
+  const ratio = newScale / Math.max(1e-9, initial.scale);
+  if (ratio < 0.2 || ratio > 5.0) {
+    notes.push(
+      `Align dim-refine rejected: scale ${newScale.toFixed(4)} is ${ratio.toFixed(2)}× ink estimate ${initial.scale.toFixed(4)}`,
+    );
+    return { transform: initial, refined: false, pairCount: scalePairs.length, notes };
+  }
+
+  const rotation = initial.rotation;
+  const c = Math.cos(rotation);
+  const sn = Math.sin(rotation);
+
+  // Seed translation: preserve ink-align pivot under the new scale.
+  let cx = 0;
+  let cy = 0;
+  for (const p of scalePairs) {
+    const m = mid(p.cand.span.a, p.cand.span.b);
+    cx += m.x;
+    cy += m.y;
+  }
+  cx /= scalePairs.length;
+  cy /= scalePairs.length;
+  const pivot = { x: cx, y: cy };
+  const mapped = applyTransform(pivot, initial);
+  const seedRx = c * (newScale * pivot.x) - sn * (newScale * pivot.y);
+  const seedRy = sn * (newScale * pivot.x) + c * (newScale * pivot.y);
+  let tx = mapped.x - seedRx;
+  let ty = mapped.y - seedRy;
+  const seed: SimilarityTransform = { scale: newScale, rotation, tx, ty };
+
+  // Pass 2 — rematch by value + proximity under seed (correct wall mates for x/y).
+  const usedForT = new Set<string>();
+  const txs: number[] = [];
+  const tys: number[] = [];
+  for (const ref of refs) {
+    if (spanLenPx(ref) < minSpanPx) continue;
+    const rm = mid(ref.span.a, ref.span.b);
+    let best: DimReading | null = null;
+    let bestDist = Infinity;
+    for (const cand of candidate) {
+      if (usedForT.has(cand.id)) continue;
+      if (Math.abs(cand.valueInches - ref.valueInches) > dimTol) continue;
+      if (spanLenPx(cand) < minSpanPx) continue;
+      const cm = applyTransform(mid(cand.span.a, cand.span.b), seed);
+      const d = dist(rm, cm);
+      if (d < bestDist) {
+        bestDist = d;
+        best = cand;
+      }
+    }
+    if (!best || bestDist > maxPairDistPx) continue;
+    usedForT.add(best.id);
+    const cm = mid(best.span.a, best.span.b);
+    const rx = c * (newScale * cm.x) - sn * (newScale * cm.y);
+    const ry = sn * (newScale * cm.x) + c * (newScale * cm.y);
+    txs.push(rm.x - rx);
+    tys.push(rm.y - ry);
+  }
+
+  let translationNote = "ink pivot";
+  if (txs.length >= minPairs) {
+    tx = median(txs);
+    ty = median(tys);
+    translationNote = `median of ${txs.length} proximity-matched midpoints`;
+  } else {
+    notes.push(
+      `Align dim-refine translation: only ${txs.length} proximity pair(s) — keeping ink pivot`,
+    );
+  }
+
+  const transform: SimilarityTransform = { scale: newScale, rotation, tx, ty };
+  notes.push(
+    `Align dim-refine: ${scalePairs.length} span(s) → scale ${initial.scale.toFixed(4)} → ${newScale.toFixed(4)}; translation via ${translationNote}`,
+  );
+  return { transform, refined: true, pairCount: scalePairs.length, notes };
 }
 
 /** Warp candidate into reference pixel grid. */

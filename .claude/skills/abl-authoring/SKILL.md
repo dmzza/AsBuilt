@@ -1,6 +1,6 @@
 ---
 name: abl-authoring
-description: Use when writing or editing .abl files for the AsBuilt app — especially when converting an image (photo or scan of a hand-drawn floor plan with tape-measure dimensions) into an .abl project. Covers the full .abl language, provenance discipline, the conversion method, and validation. Triggers - "convert this sketch/drawing/photo to abl", "model this floor plan", any .abl file authoring.
+description: Use when writing or editing .abl files for the AsBuilt app — especially when converting an image (photo or scan of a hand-drawn floor plan with tape-measure dimensions) into an .abl project. Converting a sketch REQUIRES a successful `npm run eval:extract` first; do not freehand-transcribe the raw image if extract fails — stop and diagnose. Covers the full .abl language, provenance discipline, extract→ABL mapping, self-score via `npm run eval`, and validation. Triggers - "convert this sketch/drawing/photo to abl", "model this floor plan", "eval:extract", "authoring prep", any .abl file authoring.
 ---
 
 # Authoring .abl files (and converting sketches to them)
@@ -16,15 +16,95 @@ and junction sketch positions as the weakest hints. Rooms do not need to be
 fully dimensioned — under-constrained is the normal, healthy state, and the
 app's audit panel tells the owner what to go measure next.
 
+## Hard dependency: eval:extract
+
+**Converting a sketch/photo to `.abl` requires a successful `eval:extract` run
+first.** Do not freehand-transcribe junctions, walls, or dimensions from the
+input image on your own. The extract pipeline separates structure from
+dimension ink and records them as plain JSON — that is the authoring source of
+truth.
+
+```
+npm run eval:extract -- path/to/sketch.png
+npm run eval:extract -- eval/cases/my_case
+EVAL_FORCE_REDRAW=1 npm run eval:extract -- eval/cases/my_case
+```
+
+Bare images land in `eval/cases/<slug>/` (or pass `--out <caseDir>`). Requires
+`GEMINI_API_KEY` (same env as full `npm run eval`).
+
+### If extract fails — stop
+
+If the command fails, returns empty/unusable structure or dims, is missing
+required artifacts, or otherwise does not produce a trustworthy extract:
+
+1. **Stop authoring.** Do not fall back to reading the raw sketch yourself.
+2. **Diagnose** — missing/invalid API key, quota, redraw vs extract errors,
+   bad image path, empty JSON, notes in `extract/summary.md` / console.
+3. **Fix and re-run** (`EVAL_FORCE_REDRAW=1` when cleaned rasters are wrong).
+4. Only resume `.abl` work once `extract/structure_ref.json` and
+   `extract/dims_ref.json` exist and look sane (non-empty, coords on-plan).
+
+Ask the user for help when the blocker is environmental (keys, billing) or
+when vision output is clearly broken after a retry — do not invent a model
+from the photo to “keep going.”
+
+### Artifacts to read (required inputs to authoring)
+
+| Path | Role |
+| --- | --- |
+| `cleaned/structure_ref.png` | Walls/windows/doors only — geometry without dim clutter |
+| `cleaned/dims_ref.png` | Dimension ink only — measurements without walls |
+| `extract/structure_ref.json` | `junctions[]`, `wallSpans[]` in reference pixel space |
+| `extract/dims_ref.json` | `dimensions[]` with `valueInches`, `span`, `labelBBox` |
+| `extract/summary.md` | Counts + short how-to |
+| `reviews/extract/review.html` | Single-image review (original / structure / dims) |
+
+Prefer structure JSON + structure clean for topology; dims JSON + dims clean
+for measurements. Still **verify every reading against the cleaned dims view
+(and original when needed)** — vision can misread handwriting; ask the user
+when ambiguous. Verification is not a substitute for running extract.
+
+### Map extract → .abl
+
+- Junctions → `junction name ~(x, y)` sketch positions (scale image pixels to
+  plan feet using the written dimensions; rough is fine).
+- Wall spans → `wall` between those junctions (or a `room : rect(...)` when the
+  region is a plain rectangle with no shared-wall subtleties).
+- Dim readings → `[measured]` params / `length(wall) = param` / `meas` diagonals
+  or face-referenced wall runs (`{ ref: inner }` when taped inside-to-inside).
+  Do not invent provenance: a value from the drawing is `[measured]`; geometry
+  you infer from proportions is `[approximated]`.
+
+Then follow the method below (provenance, representation choice, openings).
+
+### Self-score after authoring
+
+Put the authored project (or a rendered `candidate.png`) in the same eval case
+as the original `reference.png`, then:
+
+```
+npm run check -- path/to/project-dir
+npm run eval -- eval/cases/<id>
+```
+
+Iterate on findings (missing walls, dim mismatches, span association). Re-run
+`eval:extract` only when the reference image or cleaned cache needs refresh
+(`EVAL_FORCE_REDRAW=1`).
+
 ## Converting a hand-drawn sketch: the method
 
-### 1. Transcribe before you model
+### 1. Extract first, then model from the artifacts
 
-List every written dimension from the image with its location ("north wall of
-kitchen: 11'-8 1/2"", "diagonal living room: 15'-1""). Also note room names,
-door/window positions with any offsets, arrows, and out-of-square annotations.
-If handwriting is ambiguous (4 vs 9, 1 vs 7, missing units), **ask the user —
-never guess a reading into the file**.
+**Always run `eval:extract` successfully before modeling** (see hard dependency
+above). Author from `extract/*.json` and the cleaned rasters — not by
+transcribing the raw input image yourself.
+
+From those artifacts, build your working list: every dimension with location,
+room names, door/window positions/offsets, arrows, out-of-square notes. Cross-
+check ambiguous handwriting (4 vs 9, 1 vs 7, missing units) against
+`cleaned/dims_ref.png` and the original; **ask the user — never guess a reading
+into the file**.
 
 ### 2. Provenance discipline (the point of the whole tool)
 

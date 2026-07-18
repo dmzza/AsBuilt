@@ -36,7 +36,9 @@ function dilateMask(
 }
 
 /**
- * Compare edge maps of reference vs aligned candidate in reference pixel space.
+ * Compare edge maps of two images in the same pixel space (usually reference).
+ * Prefer walls-only structure layers from the caller — Original PNGs mix in
+ * grids, labels, and other non-layout ink.
  * Soft F1: an edge counts as a hit if the other image has an edge within radius.
  */
 export async function compareLayout(

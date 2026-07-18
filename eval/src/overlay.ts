@@ -1,5 +1,5 @@
 import sharp from "sharp";
-import type { DimReading, Finding, Point } from "./types";
+import type { DimReading, Finding, Point, StructureReading } from "./types";
 
 function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
@@ -17,6 +17,41 @@ function line(
 
 function handle(p: Point, color: string): string {
   return `<circle cx="${p.x}" cy="${p.y}" r="7" fill="${color}" stroke="#fff" stroke-width="2"/>`;
+}
+
+/** Draw junctions + wall spans onto a base PNG (reference pixel space). */
+export async function drawStructureOverlay(
+  basePng: Buffer,
+  structure: StructureReading,
+  opts?: { title?: string },
+): Promise<Buffer> {
+  const meta = await sharp(basePng).metadata();
+  const w = meta.width ?? 0;
+  const h = meta.height ?? 0;
+  const parts: string[] = [];
+  for (const span of structure.wallSpans) {
+    parts.push(line(span.a, span.b, "#0f766e", 4));
+  }
+  for (const j of structure.junctions) {
+    parts.push(handle(j.point, "#f97316"));
+    parts.push(
+      `<text x="${j.point.x + 10}" y="${j.point.y - 8}" font-size="12" font-family="ui-monospace,monospace" fill="#ea580c">${esc(j.id)}</text>`,
+    );
+  }
+  if (opts?.title) {
+    parts.push(
+      `<text x="16" y="28" font-size="18" font-family="system-ui,sans-serif" fill="#111">${esc(opts.title)}</text>`,
+    );
+  }
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
+  ${parts.join("\n  ")}
+</svg>`;
+  const overlayPng = await sharp(Buffer.from(svg)).png().toBuffer();
+  return sharp(basePng)
+    .composite([{ input: overlayPng, blend: "over" }])
+    .png()
+    .toBuffer();
 }
 
 /** Draw dim readings + findings onto a base PNG (reference pixel space). */

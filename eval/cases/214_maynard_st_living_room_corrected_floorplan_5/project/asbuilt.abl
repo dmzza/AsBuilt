@@ -1,0 +1,201 @@
+% 214 Maynard St - Living Room Corrected Floorplan
+% Authored from eval:extract artifacts (structure_ref.json + dims_ref.json),
+% cross-checked against cleaned/*.png and the original reference.png.
+% Source PDF dated 2025-04-09 (used as the [measured] date below).
+%
+% Layout: open TV Room + Kitchen (west) -> hallway with half bath + closet ->
+% Living Room (east, gas fireplace + built-in cabinet + angled bay w/ windows
+% + exterior door down to 1st floor stairs). "UP TO 3RD FL / DN TO 1ST FL"
+% stair landing is noted but the stair runs themselves are not modeled.
+%
+% Junction names j1..j38 match extract/structure_ref.json ids 1:1 for
+% traceability. Wall names w1..w37 likewise match wallSpans ids; w_notch1 and
+% w_notch2 are added to close two door-gap junction pairs the vision pass
+% correctly left disconnected (kind: "end" on both sides).
+
+layer asbuilt
+
+% Drawing note: "All walls are about 6-8" thick" (no ext/int distinction given).
+% Using the stated range's midpoint for both wall types.
+walltype ext_thick { thickness: 7" [measured 2025-04-09] }
+walltype int_thick { thickness: 7" [measured 2025-04-09] }
+
+% ---- dimension params (bound to written measurements) ----
+param d.w1  = 12'-8" [measured 2025-04-09]
+param d.w3  = 9'-9"  [measured 2025-04-09]
+param d.w14 = 5'-1"  [measured 2025-04-09]
+param d.w15 = 4'-8"  [measured 2025-04-09]
+param d.w17 = 32"    [measured 2025-04-09]
+param d.w18 = 1'-6"  [measured 2025-04-09]
+param d.w19 = 4'-5"  [measured 2025-04-09]
+param d.w20 = 7'-7"  [measured 2025-04-09]
+param d.w21 = 19'-4" [measured 2025-04-09]
+param d.w22 = 3'-8"  [measured 2025-04-09]
+param d.w23 = 5'-4"  [measured 2025-04-09]
+param d.w27 = 8'-5"  [measured 2025-04-09]
+param d.w30 = 3'-4"  [measured 2025-04-09]
+param d.w32 = 3'-4"  [measured 2025-04-09]
+
+% ---- junctions (sketch positions scaled from reference.png; rough) ----
+junction j1  ~(0",     20'-11")
+junction j2  ~(12'-6", 20'-11")
+junction j3  ~(12'-6", 18'-9")
+junction j4  ~(22'-6", 20'-11")
+junction j5  ~(26'-6", 20'-11")
+junction j6  ~(26'-6", 22'-8")
+junction j7  ~(31'-5", 22'-8")
+junction j8  ~(31'-5", 20'-11")
+junction j9  ~(36'-3", 20'-11")
+junction j10 ~(36'-3", 22'-8")
+junction j11 ~(41'-1", 22'-8")
+junction j12 ~(41'-1", 20'-11")
+junction j13 ~(48'-2", 20'-11")
+junction j14 ~(51'-10", 19'-6")
+junction j15 ~(51'-10", 14'-8")
+junction j16 ~(47'-1", 12'-9")
+junction j17 ~(47'-1", 11'-9")
+junction j18 ~(44'-4", 10'-7")
+junction j19 ~(47'-1", 10'-7")
+junction j20 ~(47'-1", 9'-1")
+junction j21 ~(51'-10", 9'-1")
+junction j22 ~(51'-10", 0")
+junction j23 ~(31'-5", 0")
+junction j24 ~(27'-10", 0")
+junction j25 ~(22'-2", 0")
+junction j26 ~(22'-2", 1'-4")
+junction j27 ~(8'-8", 1'-4")
+junction j28 ~(8'-8", 7'-8")
+junction j29 ~(0",     7'-8")
+junction j30 ~(8'-8", 9'-1")
+junction j31 ~(12'-1", 9'-1")
+junction j32 ~(15'-7", 9'-1")
+junction j33 ~(12'-1", 5'-9")
+junction j34 ~(22'-6", 5'-9")
+junction j35 ~(22'-6", 13'-11")
+junction j36 ~(22'-6", 10'-8")
+junction j37 ~(27'-10", 10'-8")
+junction j38 ~(31'-5", 10'-8")
+
+% ---- exterior perimeter walls ----
+wall w1  { from: j1,  to: j2,  type: ext_thick }
+wall w3  { from: j2,  to: j4,  type: ext_thick }
+wall w4  { from: j4,  to: j5,  type: ext_thick }
+wall w5  { from: j5,  to: j6,  type: ext_thick }
+wall w6  { from: j6,  to: j7,  type: ext_thick }
+wall w7  { from: j7,  to: j8,  type: ext_thick }
+wall w8  { from: j8,  to: j9,  type: ext_thick }
+wall w9  { from: j9,  to: j10, type: ext_thick }
+wall w10 { from: j10, to: j11, type: ext_thick }
+wall w11 { from: j11, to: j12, type: ext_thick }
+wall w12 { from: j12, to: j13, type: ext_thick }
+wall w13 { from: j13, to: j14, type: ext_thick }   % angled bay wall, has window
+wall w14 { from: j14, to: j15, type: ext_thick }
+wall w15 { from: j15, to: j16, type: ext_thick }   % angled bay wall, has window
+wall w16 { from: j16, to: j17, type: ext_thick }
+wall w_notch1 { from: j17, to: j18, type: ext_thick }  % closes vision gap; hosts ext door
+wall w17 { from: j18, to: j19, type: ext_thick }
+wall w18 { from: j19, to: j20, type: ext_thick }
+wall w19 { from: j20, to: j21, type: ext_thick }
+wall w20 { from: j21, to: j22, type: ext_thick }
+wall w21 { from: j22, to: j23, type: ext_thick }
+wall w22 { from: j23, to: j24, type: ext_thick }
+wall w23 { from: j24, to: j25, type: ext_thick }
+wall w24 { from: j25, to: j26, type: ext_thick }
+wall w25 { from: j26, to: j27, type: ext_thick }
+wall w26 { from: j27, to: j28, type: ext_thick }
+wall w27 { from: j28, to: j29, type: ext_thick }
+wall w28 { from: j29, to: j1,  type: ext_thick }
+
+% w13, w15, w_notch1 are the angled bay corner; left off-axis intentionally.
+axis w1 h
+axis w3 h
+axis w4 h
+axis w5 v
+axis w6 h
+axis w7 v
+axis w8 h
+axis w9 v
+axis w10 h
+axis w11 v
+axis w12 h
+axis w14 v
+axis w16 v
+axis w17 h
+axis w18 v
+axis w19 h
+axis w20 v
+axis w21 h
+axis w22 h
+axis w23 h
+axis w24 v
+axis w25 h
+axis w26 v
+axis w27 h
+axis w28 v
+
+length(w1)  = d.w1
+length(w3)  = d.w3
+length(w14) = d.w14
+length(w15) = d.w15
+length(w17) = d.w17
+length(w18) = d.w18
+length(w19) = d.w19
+length(w20) = d.w20
+length(w21) = d.w21
+length(w22) = d.w22
+length(w23) = d.w23
+length(w27) = d.w27
+
+% ---- interior walls ----
+wall w2  { from: j2,  to: j3,  type: int_thick }   % partial pony wall, TV Room / Kitchen
+wall w29 { from: j28, to: j30, type: int_thick }
+wall w30 { from: j30, to: j31, type: int_thick }
+wall w31 { from: j31, to: j32, type: int_thick }   % dead-end stub (peninsula/half-wall)
+wall w32 { from: j31, to: j33, type: int_thick }
+wall w33 { from: j33, to: j34, type: int_thick }
+wall w34 { from: j4,  to: j35, type: int_thick }
+wall w35 { from: j36, to: j34, type: int_thick }
+wall w_notch2 { from: j35, to: j36, type: int_thick }  % closes vision gap; hosts passage door
+wall w36 { from: j37, to: j24, type: int_thick }
+wall w37 { from: j38, to: j23, type: int_thick }
+
+axis w2  v
+axis w29 v
+axis w30 h
+axis w31 h
+axis w32 v
+axis w33 h
+axis w34 v
+axis w35 v
+axis w36 v
+axis w37 v
+axis w_notch2 v
+
+length(w30) = d.w30
+length(w32) = d.w32
+
+% ---- openings ----
+door d_stairs_ext { in: w_notch1, at: 2" from j17, size: 2'-8" x 6'-8" }
+door d_kitchen_hall { in: w_notch2, at: 2" from j36, size: 2'-10" x 6'-8" }
+door d_half_bath { in: w33, at: 4'-10" from j33, size: 2'-6" x 6'-8" }  % 4'-10" offset measured
+door d_closet_n { in: w36, at: 32" from j37, size: 2'-0" x 6'-8" }      % 32" offset measured
+door d_closet_s { in: w37, at: 22" from j38, size: 2'-0" x 6'-8" }      % 22" offset measured
+
+window win_bay1 { in: w13, at: 6" from j13, size: 3'-6" x 4'-0", sill: 2'-0" }
+window win_bay2 { in: w15, at: 6" from j15, size: 4'-6" x 4'-0", sill: 2'-0" }
+
+% ---- fixtures (approximated; no measured sizes given on the drawing) ----
+fixture fireplace { kind: fireplace, at: ~(35'-0", 20'-6"), size: 6'-0" x 1'-6" }
+fixture built_in_cabinet { kind: cabinet, at: ~(29'-0", 22'-0"), size: 5'-4" x 1'-6" }
+fixture toilet1 { kind: toilet, at: ~(24'-6", 3'-0"), size: 1'-8" x 2'-3" }
+
+% ---- space labels ----
+space tv_room     { at: ~(6'-0", 15'-0") }
+space kitchen     { at: ~(18'-0", 15'-0") }
+space half_bath   { at: ~(25'-0", 6'-0") }
+space closet      { at: ~(29'-7", 5'-4") }
+space living_room { at: ~(41'-7", 10'-5") }
+
+% ---- reference cross-checks (overall runs spanning multiple wall segments) ----
+meas m_top46  : dist(j1,  j13) = 46'    [measured 2025-04-09]
+meas m_south  : dist(j25, j22) = 29'-2" [measured 2025-04-09]

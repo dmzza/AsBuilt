@@ -17,18 +17,24 @@ import {
   scorePlanPair,
   writeReviewReport,
   type CaseMeta,
+  type DimGold,
+  type ScorePlanPairInput,
   type ScorePlanPairResult,
+  type StructureReading,
   type VisionStatus,
 } from "./index";
 import { deriveVisionStatus } from "./vision/status";
-import { renderAblProjectToPng } from "../asbuilt/render";
+import { deriveAblEvalLayers, type AblEvalLayers } from "../asbuilt/serialize";
 
 export function casesRoot(cwd = process.cwd()): string {
   return join(cwd, "eval/cases");
 }
 
 export function isCaseDir(dir: string): boolean {
-  return existsSync(join(dir, "reference.png"));
+  return (
+    existsSync(join(dir, "reference.png")) ||
+    existsSync(join(dir, "reference_project"))
+  );
 }
 
 export function listCaseDirs(root: string): string[] {
@@ -51,22 +57,73 @@ export function saveMeta(caseDir: string, meta: CaseMeta): void {
   writeFileSync(join(caseDir, "meta.json"), JSON.stringify(meta, null, 2) + "\n");
 }
 
-export async function ensureCandidate(caseDir: string, meta: CaseMeta): Promise<Buffer> {
-  const candPath = join(caseDir, "candidate.png");
-  const projectRel =
-    meta.asbuiltProject ?? (existsSync(join(caseDir, "project")) ? "project" : null);
+function resolveProjectRel(
+  caseDir: string,
+  metaKey: string | undefined,
+  defaultDir: string,
+): string | null {
+  if (metaKey) return metaKey;
+  if (existsSync(join(caseDir, defaultDir))) return defaultDir;
+  return null;
+}
+
+export interface SideArtifacts {
+  png: Buffer;
+  structure?: StructureReading;
+  structurePng?: Buffer;
+  dims?: DimGold[];
+  dimsPng?: Buffer;
+  fromAbl: boolean;
+}
+
+function layersToSide(layers: AblEvalLayers): SideArtifacts {
+  return {
+    png: layers.fullPng,
+    structure: layers.structure,
+    structurePng: layers.structurePng,
+    dims: layers.dims,
+    dimsPng: layers.dimsPng,
+    fromAbl: true,
+  };
+}
+
+/** Ensure reference.png exists; derive structure/dims from .abl when applicable. */
+export function ensureReference(caseDir: string, meta: CaseMeta): SideArtifacts {
+  const projectRel = resolveProjectRel(
+    caseDir,
+    meta.referenceProject,
+    "reference_project",
+  );
   if (projectRel) {
-    const projectDir = join(caseDir, projectRel);
-    const { png, branch } = renderAblProjectToPng(projectDir, {
+    const layers = deriveAblEvalLayers(join(caseDir, projectRel), {
       branch: meta.branch,
       ppi: 5,
       showDims: true,
     });
-    writeFileSync(candPath, png);
-    void branch;
-    return png;
+    writeFileSync(join(caseDir, "reference.png"), layers.fullPng);
+    return layersToSide(layers);
   }
-  if (existsSync(candPath)) return readFileSync(candPath);
+  const refPath = join(caseDir, "reference.png");
+  if (!existsSync(refPath)) {
+    throw new Error(`No reference.png and no reference project in ${caseDir}`);
+  }
+  return { png: readFileSync(refPath), fromAbl: false };
+}
+
+/** Ensure candidate.png exists; derive structure/dims from .abl when applicable. */
+export function ensureCandidate(caseDir: string, meta: CaseMeta): SideArtifacts {
+  const candPath = join(caseDir, "candidate.png");
+  const projectRel = resolveProjectRel(caseDir, meta.asbuiltProject, "project");
+  if (projectRel) {
+    const layers = deriveAblEvalLayers(join(caseDir, projectRel), {
+      branch: meta.branch,
+      ppi: 5,
+      showDims: true,
+    });
+    writeFileSync(candPath, layers.fullPng);
+    return layersToSide(layers);
+  }
+  if (existsSync(candPath)) return { png: readFileSync(candPath), fromAbl: false };
   throw new Error(`No candidate.png and no asbuilt project in ${caseDir}`);
 }
 
@@ -148,26 +205,63 @@ export function summarizeCase(caseDir: string): CaseSummary {
 export async function runCase(caseDir: string): Promise<ScorePlanPairResult> {
   const id = basename(caseDir);
   const meta = loadMeta(caseDir);
-  const reference = readFileSync(join(caseDir, "reference.png"));
-  const candidate = await ensureCandidate(caseDir, meta);
+  const reference = ensureReference(caseDir, meta);
+  const candidate = ensureCandidate(caseDir, meta);
 
-  const referenceGold = loadDimGold(goldPathForImage(caseDir, "reference"));
-  const candidateGold = loadDimGold(goldPathForImage(caseDir, "candidate"));
+  const fileReferenceGold = loadDimGold(goldPathForImage(caseDir, "reference"));
+  const fileCandidateGold = loadDimGold(goldPathForImage(caseDir, "candidate"));
+
+  // File gold wins when present, but NOT when reference was swapped to ABL —
+  // file gold spans are in the old sketch frame and will misalign.
+  const usingAblRefDims =
+    (reference.fromAbl || fileReferenceGold.length === 0) &&
+    (reference.dims?.length ?? 0) > 0;
+  const usingAblCandDims =
+    (candidate.fromAbl || fileCandidateGold.length === 0) &&
+    (candidate.dims?.length ?? 0) > 0;
+  const referenceGold = usingAblRefDims
+    ? reference.dims
+    : fileReferenceGold.length > 0 && !reference.fromAbl
+      ? fileReferenceGold
+      : undefined;
+  const candidateGold = usingAblCandDims
+    ? candidate.dims
+    : fileCandidateGold.length > 0 && !candidate.fromAbl
+      ? fileCandidateGold
+      : undefined;
 
   const runId = new Date().toISOString().replace(/[:.]/g, "-");
   const outDir = join(caseDir, "reviews", runId);
   mkdirSync(outDir, { recursive: true });
 
-  const result = await scorePlanPair({
-    reference,
-    candidate,
-    referenceGold: referenceGold.length ? referenceGold : undefined,
-    candidateGold: candidateGold.length ? candidateGold : undefined,
+  const input: ScorePlanPairInput = {
+    reference: reference.png,
+    candidate: candidate.png,
+    referenceGold: referenceGold?.length ? referenceGold : undefined,
+    candidateGold: candidateGold?.length ? candidateGold : undefined,
     tolerances: meta.tolerances,
     visionTiles: meta.visionTiles,
     artifactDir: outDir,
     cleanedCacheDir: join(caseDir, "cleaned"),
-  });
+  };
+
+  if (reference.structure) {
+    input.referenceStructure = reference.structure;
+    input.referenceStructurePng = reference.structurePng;
+  }
+  if (candidate.structure) {
+    input.candidateStructure = candidate.structure;
+    input.candidateStructurePng = candidate.structurePng;
+  }
+  // Dims layer PNGs only when dims JSON came from the same ABL derivation.
+  if (usingAblRefDims && reference.dimsPng) {
+    input.referenceDimsPng = reference.dimsPng;
+  }
+  if (usingAblCandDims && candidate.dimsPng) {
+    input.candidateDimsPng = candidate.dimsPng;
+  }
+
+  const result = await scorePlanPair(input);
 
   const latest = join(caseDir, "reviews", "latest");
   mkdirSync(join(caseDir, "reviews"), { recursive: true });

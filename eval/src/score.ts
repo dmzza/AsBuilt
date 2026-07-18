@@ -3,6 +3,7 @@ import { join } from "node:path";
 import {
   estimateSimilarityTransform,
   onionSkin,
+  refineTransformFromDims,
   warpCandidateToReference,
 } from "./align";
 import { extractDimensions, visionTopologyFindings } from "./dims/extract";
@@ -17,6 +18,7 @@ import type {
   ScoreAxes,
   ScorePlanPairInput,
   ScorePlanPairResult,
+  SimilarityTransform,
   StructureReading,
 } from "./types";
 
@@ -27,7 +29,7 @@ function asUsed(gold: DimGold[] | undefined, proposed: DimReading[]): DimReading
 
 /**
  * Tool-agnostic plan fidelity score: reference image vs candidate image.
- * No AsBuilt types. Gold dims are optional image-anchored verified readings.
+ * No AsBuilt types. Gold dims / structure overrides skip AI for that side.
  */
 export async function scorePlanPair(
   input: ScorePlanPairInput,
@@ -36,18 +38,13 @@ export async function scorePlanPair(
   const useVision = input.useVision !== false;
   const artifactDir = input.artifactDir;
 
-  const transform = await estimateSimilarityTransform(input.reference, input.candidate);
-  notes.push(
-    `Align: scale=${transform.scale.toFixed(4)} rot=${((transform.rotation * 180) / Math.PI).toFixed(2)}°`,
-  );
-
-  const aligned = await warpCandidateToReference(input.candidate, input.reference, transform);
-  const onion = await onionSkin(input.reference, aligned);
-
-  const layout = await compareLayout(
+  // 1) Ink/bbox seed align (may be wrong scale for clean ABL renders vs sketches).
+  let transform: SimilarityTransform = await estimateSimilarityTransform(
     input.reference,
-    aligned,
-    input.tolerances?.layoutMismatch ?? 0.35,
+    input.candidate,
+  );
+  notes.push(
+    `Align: scale=${transform.scale.toFixed(4)} rot=${((transform.rotation * 180) / Math.PI).toFixed(2)}° (ink)`,
   );
 
   let proposedReferenceReadings: DimReading[] = [];
@@ -67,64 +64,121 @@ export async function scorePlanPair(
     candidate: "skipped",
   };
 
-  if (useVision) {
-    const cleanedDir = input.cleanedCacheDir;
-    const tiles = input.visionTiles !== false;
-    if (!tiles) {
-      notes.push("Vision dim extract: one-shot full-page only (tiles disabled)");
-    }
+  const cleanedDir = input.cleanedCacheDir;
+  const tiles = input.visionTiles !== false;
+  if (useVision && !tiles) {
+    notes.push("Vision dim extract: one-shot full-page only (tiles disabled)");
+  }
 
-    // Structure layer (walls/junctions) — Nano Banana walls-only redraw, then extract.
-    {
-      const sx = await extractStructure(input.reference, {
-        cleanedCachePath: cleanedDir ? join(cleanedDir, "structure_ref.png") : undefined,
-      });
-      referenceStructure = sx.structure;
-      structureRefCleaned = sx.cleanedPng;
-      structureCleaned.reference = sx.cleanedStatus;
-      notes.push(...sx.notes.map((n) => `ref-structure: ${n}`));
-    }
-    {
-      const sx = await extractStructure(input.candidate, {
-        cleanedCachePath: cleanedDir ? join(cleanedDir, "structure_cand.png") : undefined,
-      });
-      candidateStructure = sx.structure;
-      structureCandCleaned = sx.cleanedPng;
-      structureCleaned.candidate = sx.cleanedStatus;
-      notes.push(...sx.notes.map((n) => `cand-structure: ${n}`));
-    }
+  // 2) Structure + dims first (image-space; no align needed).
+  if (input.referenceStructure) {
+    referenceStructure = input.referenceStructure;
+    structureRefCleaned = input.referenceStructurePng ?? null;
+    structureCleaned.reference = "skipped";
+    notes.push("ref-structure: derived from .abl (skipped AI)");
+  } else if (useVision) {
+    const sx = await extractStructure(input.reference, {
+      cleanedCachePath: cleanedDir ? join(cleanedDir, "structure_ref.png") : undefined,
+    });
+    referenceStructure = sx.structure;
+    structureRefCleaned = sx.cleanedPng;
+    structureCleaned.reference = sx.cleanedStatus;
+    notes.push(...sx.notes.map((n) => `ref-structure: ${n}`));
+  }
 
-    // Dim layer — Nano Banana dims-only redraw, then extract (layout/align stay on originals).
-    if (!input.referenceGold?.length) {
-      const ex = await extractDimensions(input.reference, {
-        tiles,
-        cleanedCachePath: cleanedDir ? join(cleanedDir, "dims_ref.png") : undefined,
-      });
-      proposedReferenceReadings = ex.readings;
-      dimsRefCleaned = ex.cleanedPng;
-      dimsCleaned.reference = ex.cleanedStatus;
-      notes.push(...ex.notes.map((n) => `ref: ${n}`));
-    } else {
-      notes.push(`Using ${input.referenceGold.length} verified reference gold dim(s)`);
+  if (input.candidateStructure) {
+    candidateStructure = input.candidateStructure;
+    structureCandCleaned = input.candidateStructurePng ?? null;
+    structureCleaned.candidate = "skipped";
+    notes.push("cand-structure: derived from .abl (skipped AI)");
+  } else if (useVision) {
+    const sx = await extractStructure(input.candidate, {
+      cleanedCachePath: cleanedDir ? join(cleanedDir, "structure_cand.png") : undefined,
+    });
+    candidateStructure = sx.structure;
+    structureCandCleaned = sx.cleanedPng;
+    structureCleaned.candidate = sx.cleanedStatus;
+    notes.push(...sx.notes.map((n) => `cand-structure: ${n}`));
+  }
+
+  if (input.referenceGold?.length) {
+    notes.push(`Using ${input.referenceGold.length} verified reference gold dim(s)`);
+    dimsRefCleaned = input.referenceDimsPng ?? null;
+    if (input.referenceDimsPng) {
+      dimsCleaned.reference = "skipped";
+      notes.push("ref-dims: layer PNG from .abl (skipped AI redraw)");
     }
-    if (!input.candidateGold?.length) {
-      const ex = await extractDimensions(input.candidate, {
-        tiles,
-        cleanedCachePath: cleanedDir ? join(cleanedDir, "dims_cand.png") : undefined,
-      });
-      proposedCandidateReadings = ex.readings;
-      dimsCandCleaned = ex.cleanedPng;
-      dimsCleaned.candidate = ex.cleanedStatus;
-      notes.push(...ex.notes.map((n) => `cand: ${n}`));
-    } else {
-      notes.push(`Using ${input.candidateGold.length} verified candidate gold dim(s)`);
+  } else if (useVision) {
+    const ex = await extractDimensions(input.reference, {
+      tiles,
+      cleanedCachePath: cleanedDir ? join(cleanedDir, "dims_ref.png") : undefined,
+    });
+    proposedReferenceReadings = ex.readings;
+    dimsRefCleaned = ex.cleanedPng;
+    dimsCleaned.reference = ex.cleanedStatus;
+    notes.push(...ex.notes.map((n) => `ref: ${n}`));
+  }
+
+  if (input.candidateGold?.length) {
+    notes.push(`Using ${input.candidateGold.length} verified candidate gold dim(s)`);
+    dimsCandCleaned = input.candidateDimsPng ?? null;
+    if (input.candidateDimsPng) {
+      dimsCleaned.candidate = "skipped";
+      notes.push("cand-dims: layer PNG from .abl (skipped AI redraw)");
     }
-  } else {
+  } else if (useVision) {
+    const ex = await extractDimensions(input.candidate, {
+      tiles,
+      cleanedCachePath: cleanedDir ? join(cleanedDir, "dims_cand.png") : undefined,
+    });
+    proposedCandidateReadings = ex.readings;
+    dimsCandCleaned = ex.cleanedPng;
+    dimsCleaned.candidate = ex.cleanedStatus;
+    notes.push(...ex.notes.map((n) => `cand: ${n}`));
+  }
+
+  if (!useVision) {
     notes.push("Vision disabled (useVision=false)");
   }
 
   const referenceDimsUsed = asUsed(input.referenceGold, proposedReferenceReadings);
   const candidateDimsUsed = asUsed(input.candidateGold, proposedCandidateReadings);
+
+  // 3) Refine scale/translation from value-matched dim spans when possible.
+  const refined = refineTransformFromDims(
+    referenceDimsUsed,
+    candidateDimsUsed,
+    transform,
+    { dimTolInches: input.tolerances?.dimInches },
+  );
+  notes.push(...refined.notes);
+  transform = refined.transform;
+
+  // 4) Warp / layout / match with final transform.
+  const aligned = await warpCandidateToReference(input.candidate, input.reference, transform);
+  const onion = await onionSkin(input.reference, aligned);
+
+  // Prefer walls-only structure layers for layout — full Original PNGs include
+  // grids, dim labels, fixtures, and sketch clutter that aren't layout.
+  let structureCandAligned: Buffer | null = null;
+  if (structureCandCleaned) {
+    structureCandAligned = await warpCandidateToReference(
+      structureCandCleaned,
+      input.reference,
+      transform,
+    );
+  }
+  const useStructureLayout = Boolean(structureRefCleaned && structureCandAligned);
+  const layout = await compareLayout(
+    useStructureLayout ? structureRefCleaned! : input.reference,
+    useStructureLayout ? structureCandAligned! : aligned,
+    input.tolerances?.layoutMismatch ?? 0.35,
+  );
+  notes.push(
+    useStructureLayout
+      ? "Layout compare: structure_ref vs structure_cand_aligned (walls-only)"
+      : "Layout compare: Original reference vs aligned candidate (structure layers unavailable)",
+  );
 
   const dimMatch = matchDimensions(
     referenceDimsUsed,
@@ -198,19 +252,11 @@ export async function scorePlanPair(
   };
   if (structureRefCleaned) overlays.structureRefPng = "structure_ref.png";
   if (structureCandCleaned) overlays.structureCandPng = "structure_cand.png";
+  if (structureCandAligned) overlays.structureCandAlignedPng = "structure_cand_aligned.png";
   if (dimsRefCleaned) overlays.dimsRefPng = "dims_ref.png";
   if (dimsCandCleaned) overlays.dimsCandPng = "dims_cand.png";
 
-  let structureCandAligned: Buffer | null = null;
   let dimsCandAligned: Buffer | null = null;
-  if (structureCandCleaned) {
-    structureCandAligned = await warpCandidateToReference(
-      structureCandCleaned,
-      input.reference,
-      transform,
-    );
-    overlays.structureCandAlignedPng = "structure_cand_aligned.png";
-  }
   if (dimsCandCleaned) {
     dimsCandAligned = await warpCandidateToReference(
       dimsCandCleaned,
@@ -258,6 +304,20 @@ export async function scorePlanPair(
           join(input.cleanedCacheDir, overlays.dimsCandAlignedPng),
           dimsCandAligned,
         );
+      }
+      // Only cache vision-extracted layers, not ABL-derived overrides.
+      // ABL-derived layers would clobber extract artifacts from sketch workflows.
+      if (structureRefCleaned && overlays.structureRefPng && !input.referenceStructure) {
+        writeFileSync(join(input.cleanedCacheDir, overlays.structureRefPng), structureRefCleaned);
+      }
+      if (structureCandCleaned && overlays.structureCandPng && !input.candidateStructure) {
+        writeFileSync(join(input.cleanedCacheDir, overlays.structureCandPng), structureCandCleaned);
+      }
+      if (dimsRefCleaned && overlays.dimsRefPng && !input.referenceGold) {
+        writeFileSync(join(input.cleanedCacheDir, overlays.dimsRefPng), dimsRefCleaned);
+      }
+      if (dimsCandCleaned && overlays.dimsCandPng && !input.candidateGold) {
+        writeFileSync(join(input.cleanedCacheDir, overlays.dimsCandPng), dimsCandCleaned);
       }
     }
 
